@@ -754,12 +754,58 @@ body.dragging-sidebar {
   height: 100%;
 }
 
-#editor.drag-over,
-#editor-split.drag-over,
-#prose-editor.drag-over {
-  outline: 2px solid #4ec969;
-  outline-offset: -2px;
-  opacity: 0.85;
+#drop-overlay {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 100;
+  pointer-events: none;
+}
+
+#drop-overlay.visible {
+  display: flex;
+  pointer-events: auto;
+}
+
+#drop-overlay .drop-zone {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 3px dashed rgba(255, 255, 255, 0.15);
+  margin: 8px;
+  border-radius: 8px;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+#drop-overlay .drop-zone span {
+  font-size: 18px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.3);
+  pointer-events: none;
+  user-select: none;
+  transition: color 0.15s;
+}
+
+#drop-overlay.highlight-left .drop-left {
+  background: rgba(78, 201, 105, 0.15);
+  border-color: #4ec969;
+}
+
+#drop-overlay.highlight-left .drop-left span {
+  color: #4ec969;
+}
+
+#drop-overlay.highlight-right .drop-right {
+  background: rgba(78, 201, 105, 0.15);
+  border-color: #4ec969;
+}
+
+#drop-overlay.highlight-right .drop-right span {
+  color: #4ec969;
 }
 
 .split-gutter {

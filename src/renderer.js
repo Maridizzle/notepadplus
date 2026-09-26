@@ -1719,9 +1719,12 @@ function toggleSidebar() {
 }
 
 function initDragAndDrop() {
-  const editorEl = document.getElementById('editor');
-  const splitEl = document.getElementById('editor-split');
-  const proseEl = document.getElementById('prose-editor');
+  const editorArea = document.getElementById('editor-area');
+  let dropOverlay = document.createElement('div');
+  dropOverlay.id = 'drop-overlay';
+  dropOverlay.innerHTML = '<div class="drop-zone drop-left"><span>Open in Tab</span></div><div class="drop-zone drop-right"><span>Open in Split</span></div>';
+  editorArea.appendChild(dropOverlay);
+  let dragCounter = 0;
 
   document.addEventListener('dragover', (e) => {
     e.preventDefault();
@@ -1731,65 +1734,58 @@ function initDragAndDrop() {
   document.addEventListener('drop', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    editorEl.classList.remove('drag-over');
-    splitEl.classList.remove('drag-over');
-    proseEl.classList.remove('drag-over');
+    dragCounter = 0;
+    dropOverlay.classList.remove('visible');
   });
 
-  function addDropTarget(el, handler) {
-    let dragCounter = 0;
+  editorArea.addEventListener('dragenter', (e) => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter++;
+    dropOverlay.classList.add('visible');
+  });
 
-    el.addEventListener('dragenter', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      dragCounter++;
-      el.classList.add('drag-over');
-    });
+  editorArea.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = editorArea.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const isRight = x > rect.width / 2;
+    dropOverlay.classList.toggle('highlight-right', isRight);
+    dropOverlay.classList.toggle('highlight-left', !isRight);
+  });
 
-    el.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-    });
-
-    el.addEventListener('dragleave', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      dragCounter--;
-      if (dragCounter <= 0) {
-        dragCounter = 0;
-        el.classList.remove('drag-over');
-      }
-    });
-
-    el.addEventListener('drop', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
+  editorArea.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter--;
+    if (dragCounter <= 0) {
       dragCounter = 0;
-      el.classList.remove('drag-over');
+      dropOverlay.classList.remove('visible', 'highlight-left', 'highlight-right');
+    }
+  });
 
-      if (e.dataTransfer.files.length > 0) {
-        for (const file of e.dataTransfer.files) {
-          if (file.path) {
-            handler(file.path);
-          }
-        }
+  editorArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter = 0;
+    dropOverlay.classList.remove('visible', 'highlight-left', 'highlight-right');
+
+    if (!e.dataTransfer.files.length) return;
+
+    const rect = editorArea.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const isRight = x > rect.width / 2;
+
+    for (const file of e.dataTransfer.files) {
+      if (!file.path) continue;
+      if (isRight) {
+        loadFileIntoSplitPane(file.path);
+      } else {
+        openFileFromPath(file.path);
       }
-    });
-  }
-
-  addDropTarget(editorEl, (filePath) => {
-    openFileFromPath(filePath);
-  });
-
-  addDropTarget(splitEl, (filePath) => {
-    loadFileIntoSplitPane(filePath);
-  });
-
-  addDropTarget(proseEl, async (filePath) => {
-    if (!window.electronAPI) return;
-    const result = await window.electronAPI.readFile({ filePath });
-    if (result.success) {
-      proseEl.value = result.content;
     }
   });
 }
