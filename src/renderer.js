@@ -1000,6 +1000,11 @@ function setEditorBackground(color) {
 }
 
 async function openFileFromPath(filePath) {
+  if (focusedPane === 'right' && splitView) {
+    loadFileIntoSplitPane(filePath);
+    return;
+  }
+
   const existing = tabs.find(t => t.filePath === filePath);
   if (existing) {
     switchToTab(existing.id);
@@ -1378,9 +1383,10 @@ function lineOperation(type) {
 // Split view
 let splitView = false;
 let splitEditorView = null;
+let splitFilePath = null;
 let compareMode = false;
 
-function createSplitEditor(content, langExt, readOnly) {
+function createSplitEditor(content, langExt, readOnly, syncToMain) {
   const splitEl = document.getElementById('editor-split');
   splitEl.innerHTML = '';
 
@@ -1439,7 +1445,7 @@ function createSplitEditor(content, langExt, readOnly) {
 
   if (readOnly) {
     extensions.push(EditorState.readOnly.of(true));
-  } else {
+  } else if (syncToMain !== false) {
     extensions.push(
       EditorView.updateListener.of((update) => {
         if (update.docChanged && !compareMode) {
@@ -1497,6 +1503,7 @@ function toggleSplitView() {
       splitEditorView.destroy();
       splitEditorView = null;
     }
+    splitFilePath = null;
   }
 }
 
@@ -1524,7 +1531,8 @@ async function loadFileIntoSplitPane(filePath) {
     splitEditorView.destroy();
     splitEditorView = null;
   }
-  createSplitEditor(result.content, langExt, false);
+  splitFilePath = filePath;
+  createSplitEditor(result.content, langExt, false, false);
 }
 
 function initSplitGutter() {
@@ -1881,6 +1889,10 @@ function wireEvents() {
       if (pendingCompare) {
         pendingCompare = false;
         startCompare(filePath, content);
+        return;
+      }
+      if (focusedPane === 'right' && splitView) {
+        loadFileIntoSplitPane(filePath);
         return;
       }
       const existing = tabs.find(t => t.filePath === filePath);
