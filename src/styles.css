@@ -754,6 +754,14 @@ body.dragging-sidebar {
   height: 100%;
 }
 
+#editor.drag-over,
+#editor-split.drag-over,
+#prose-editor.drag-over {
+  outline: 2px solid #4ec969;
+  outline-offset: -2px;
+  opacity: 0.85;
+}
+
 .split-gutter {
   width: 5px;
   cursor: col-resize;

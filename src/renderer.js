@@ -67,6 +67,7 @@ let leftBgColor = '#282c34';
 let rightBgColor = '#282c34';
 let proseBgColor = '#282c34';
 let focusedPane = 'left';
+let switchingTabs = false;
 
 const fontCompartment = new Compartment();
 
@@ -247,6 +248,8 @@ function switchToTab(id) {
   const tab = getActiveTab();
   if (!tab) return;
 
+  switchingTabs = true;
+
   const langExt = getLanguageExtension(tab.filePath);
   editorView.dispatch({
     changes: { from: 0, to: editorView.state.doc.length, insert: tab.content },
@@ -272,6 +275,8 @@ function switchToTab(id) {
   } catch (e) {
     // ignore position errors
   }
+
+  switchingTabs = false;
 
   editorView.focus();
   updateStatusBar();
@@ -371,6 +376,7 @@ function updateStatusBar() {
 }
 
 function markModified() {
+  if (switchingTabs) return;
   const tab = getActiveTab();
   if (!tab) return;
   const currentContent = editorView.state.doc.toString();
@@ -478,6 +484,15 @@ function initEditor() {
         if (update.selectionSet || update.docChanged) {
           updateStatusBar();
         }
+      }),
+      EditorView.domEventHandlers({
+        drop(e) {
+          if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+            e.preventDefault();
+            return true;
+          }
+          return false;
+        },
       }),
     ],
   });
@@ -1411,6 +1426,15 @@ function createSplitEditor(content, langExt, readOnly) {
       ...completionKeymap,
       indentWithTab,
     ]),
+    EditorView.domEventHandlers({
+      drop(e) {
+        if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+          e.preventDefault();
+          return true;
+        }
+        return false;
+      },
+    }),
   ];
 
   if (readOnly) {
@@ -1474,6 +1498,33 @@ function toggleSplitView() {
       splitEditorView = null;
     }
   }
+}
+
+async function loadFileIntoSplitPane(filePath) {
+  if (!window.electronAPI) return;
+  const result = await window.electronAPI.readFile({ filePath });
+  if (!result.success) return;
+  await window.electronAPI.trackRecentFile({ filePath });
+
+  if (!splitView) {
+    splitView = true;
+    const editorArea = document.getElementById('editor-area');
+    const editorEl = document.getElementById('editor');
+    const proseEl = document.getElementById('prose-editor');
+    editorArea.classList.add('split-view');
+    if (proseMode) {
+      proseEl.style.width = '50%';
+    } else {
+      editorEl.style.width = '50%';
+    }
+  }
+
+  const langExt = getLanguageExtension(filePath);
+  if (splitEditorView) {
+    splitEditorView.destroy();
+    splitEditorView = null;
+  }
+  createSplitEditor(result.content, langExt, false);
 }
 
 function initSplitGutter() {
@@ -1668,7 +1719,9 @@ function toggleSidebar() {
 }
 
 function initDragAndDrop() {
-  const editorArea = document.getElementById('editor-area');
+  const editorEl = document.getElementById('editor');
+  const splitEl = document.getElementById('editor-split');
+  const proseEl = document.getElementById('prose-editor');
 
   document.addEventListener('dragover', (e) => {
     e.preventDefault();
@@ -1678,13 +1731,65 @@ function initDragAndDrop() {
   document.addEventListener('drop', (e) => {
     e.preventDefault();
     e.stopPropagation();
+    editorEl.classList.remove('drag-over');
+    splitEl.classList.remove('drag-over');
+    proseEl.classList.remove('drag-over');
+  });
 
-    if (e.dataTransfer.files.length > 0) {
-      for (const file of e.dataTransfer.files) {
-        if (file.path) {
-          openFileFromPath(file.path);
+  function addDropTarget(el, handler) {
+    let dragCounter = 0;
+
+    el.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounter++;
+      el.classList.add('drag-over');
+    });
+
+    el.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
+    el.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounter--;
+      if (dragCounter <= 0) {
+        dragCounter = 0;
+        el.classList.remove('drag-over');
+      }
+    });
+
+    el.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounter = 0;
+      el.classList.remove('drag-over');
+
+      if (e.dataTransfer.files.length > 0) {
+        for (const file of e.dataTransfer.files) {
+          if (file.path) {
+            handler(file.path);
+          }
         }
       }
+    });
+  }
+
+  addDropTarget(editorEl, (filePath) => {
+    openFileFromPath(filePath);
+  });
+
+  addDropTarget(splitEl, (filePath) => {
+    loadFileIntoSplitPane(filePath);
+  });
+
+  addDropTarget(proseEl, async (filePath) => {
+    if (!window.electronAPI) return;
+    const result = await window.electronAPI.readFile({ filePath });
+    if (result.success) {
+      proseEl.value = result.content;
     }
   });
 }

@@ -26,6 +26,15 @@ jobs:
         working-directory: win7
         run: npm install
 
+      - name: Inject version into package.json
+        working-directory: win7
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version }}"
+          VERSION="${VERSION#v}"
+          VERSION="${VERSION%-win7}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
       - name: Setup build files
         working-directory: win7
         run: npm run setup

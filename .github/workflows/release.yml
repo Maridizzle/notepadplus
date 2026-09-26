@@ -35,6 +35,13 @@ jobs:
 
       - run: npm install
 
+      - name: Inject version into package.json
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+
       - run: npm run build
 
       - name: Build distributables
