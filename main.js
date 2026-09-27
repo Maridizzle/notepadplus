@@ -9,6 +9,22 @@ let rendererReady = false;
 let closeConfirmed = false;
 
 const sessionFile = path.join(app.getPath('userData'), 'session.json');
+const recentFile = path.join(app.getPath('userData'), 'recent.json');
+
+function loadRecentFiles() {
+  try {
+    if (fs.existsSync(recentFile)) {
+      const data = JSON.parse(fs.readFileSync(recentFile, 'utf-8'));
+      if (Array.isArray(data)) recentFiles = data.filter(f => typeof f === 'string');
+    }
+  } catch (e) {}
+}
+
+function saveRecentFiles() {
+  try {
+    fs.writeFileSync(recentFile, JSON.stringify(recentFiles), 'utf-8');
+  } catch (e) {}
+}
 
 function loadSession() {
   try {
@@ -29,6 +45,7 @@ function addRecentFile(filePath) {
   recentFiles = recentFiles.filter(f => f !== filePath);
   recentFiles.unshift(filePath);
   if (recentFiles.length > MAX_RECENT) recentFiles.length = MAX_RECENT;
+  saveRecentFiles();
 }
 
 function createWindow() {
@@ -70,7 +87,7 @@ function createWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     rendererReady = true;
     const session = loadSession();
-    if (session && session.tabs && session.tabs.length > 0) {
+    if (session) {
       mainWindow.webContents.send('restore-session', session);
     }
   });
@@ -276,7 +293,7 @@ function createWindow() {
             dialog.showMessageBox(mainWindow, {
               type: 'info',
               title: 'About NotepadPlus',
-              message: 'NotepadPlus v1.0.0',
+              message: `NotepadPlus v${app.getVersion()}`,
               detail: 'A Notepad++ inspired editor with wiki-style file links, custom fonts, background colors, and Grammarly compatibility.\n\nBuilt with Electron + CodeMirror 6.\nBy Maridizzle.',
             });
           },
@@ -301,7 +318,7 @@ function createWindow() {
 
 async function handleFileOpen() {
   const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openFile'],
+    properties: ['openFile', 'multiSelections'],
     filters: [
       { name: 'All Files', extensions: ['*'] },
       { name: 'Text Files', extensions: ['txt', 'md', 'log'] },
@@ -309,8 +326,8 @@ async function handleFileOpen() {
     ],
   });
 
-  if (!result.canceled && result.filePaths.length > 0) {
-    const filePath = result.filePaths[0];
+  if (result.canceled) return;
+  for (const filePath of result.filePaths) {
     try {
       const content = fs.readFileSync(filePath, 'utf-8');
       addRecentFile(filePath);
@@ -480,7 +497,14 @@ ipcMain.on('close-confirmed', () => {
   if (mainWindow) mainWindow.close();
 });
 
-app.whenReady().then(createWindow);
+ipcMain.handle('show-error', async (event, { title, message }) => {
+  dialog.showErrorBox(title || 'Error', message || '');
+});
+
+app.whenReady().then(() => {
+  loadRecentFiles();
+  createWindow();
+});
 
 app.on('window-all-closed', () => {
   app.quit();

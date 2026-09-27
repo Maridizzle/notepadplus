@@ -258,6 +258,7 @@ function getSessionState() {
   const activeIndex = tabs.findIndex(t => t.id === activeTabId);
   return {
     activeIndex,
+    settings: collectSettings(),
     tabs: tabs.map(t => ({
       filePath: t.filePath,
       content: t.filePath ? null : t.content,
@@ -268,6 +269,10 @@ function getSessionState() {
 }
 
 async function restoreSession(session) {
+  applySettings(session.settings);
+
+  if (!session.tabs || session.tabs.length === 0) return;
+
   while (tabs.length > 0) {
     tabs.pop();
   }
@@ -489,7 +494,30 @@ function markTabSaved(tab, content) {
   updateStatusBar();
 }
 
-async function saveTab(tab) {
+function reportSaveError(filePath, error) {
+  if (window.electronAPI && window.electronAPI.showError) {
+    window.electronAPI.showError({
+      title: 'Save failed',
+      message: `Could not save ${filePath}\n\n${error || 'Unknown error'}`,
+    });
+  }
+}
+
+function applyTabLanguage(tab) {
+  const effect = languageCompartment.reconfigure(getLanguageExtension(tab.filePath));
+  if (tab.id === activeTabId) {
+    editorView.dispatch({ effects: effect });
+  } else {
+    tab.state = tab.state.update({ effects: effect }).state;
+  }
+  if (splitMode === 'tab' && splitTabId === tab.id && splitEditorView) {
+    splitEditorView.dispatch({
+      effects: splitLanguageCompartment.reconfigure(getLanguageExtension(tab.filePath)),
+    });
+  }
+}
+
+async function saveTab(tab, opts = {}) {
   if (!tab || !window.electronAPI) return false;
   if (!tab.filePath) return saveTabAs(tab);
 
@@ -498,7 +526,10 @@ async function saveTab(tab) {
     filePath: tab.filePath,
     content: content.replace(/\n/g, tab.eol),
   });
-  if (!result.success) return false;
+  if (!result.success) {
+    if (!opts.silent) reportSaveError(tab.filePath, result.error);
+    return false;
+  }
   markTabSaved(tab, content);
   return true;
 }
@@ -511,8 +542,12 @@ async function saveTabAs(tab) {
     content: content.replace(/\n/g, tab.eol),
     defaultPath: tab.filePath || 'untitled.txt',
   });
-  if (!result.success) return false;
+  if (!result.success) {
+    if (!result.canceled) reportSaveError(result.filePath || 'file', result.error);
+    return false;
+  }
   tab.filePath = result.filePath;
+  applyTabLanguage(tab);
   markTabSaved(tab, content);
   return true;
 }
@@ -723,18 +758,22 @@ function scheduleAutoSave(tab = getActiveTab()) {
   tab.autoSaveTimer = setTimeout(async () => {
     tab.autoSaveTimer = null;
     if (!tab.filePath || !tab.modified) return;
-    if (await saveTab(tab)) flashAutoSaveIndicator();
+    if (await saveTab(tab, { silent: true })) {
+      flashAutoSaveIndicator();
+    } else {
+      flashAutoSaveIndicator('Auto-save failed', '#e05a5a');
+    }
   }, AUTO_SAVE_DELAY);
 }
 
-function flashAutoSaveIndicator() {
+function flashAutoSaveIndicator(text = 'Saved!', color = '#4ec969') {
   const indicator = document.getElementById('autosave-indicator');
-  indicator.textContent = 'Saved!';
-  indicator.style.color = '#4ec969';
+  indicator.textContent = text;
+  indicator.style.color = color;
   setTimeout(() => {
     indicator.textContent = 'Auto-save: ON';
-    indicator.style.color = '#73c991';
-  }, 1500);
+    indicator.style.color = '';
+  }, 2500);
 }
 
 let proseMode = false;
@@ -1092,6 +1131,66 @@ function toggleProseMode() {
   }
 }
 
+function toggleWordWrap() {
+  wordWrap = !wordWrap;
+  const wrapExt = wordWrap ? EditorView.lineWrapping : [];
+  editorView.dispatch({
+    effects: wrapCompartment.reconfigure(wrapExt),
+  });
+  if (splitEditorView) {
+    splitEditorView.dispatch({
+      effects: splitWrapCompartment.reconfigure(wrapExt),
+    });
+  }
+  const proseEl = document.getElementById('prose-editor');
+  if (wordWrap) {
+    proseEl.style.whiteSpace = 'pre-wrap';
+    proseEl.style.overflowWrap = 'break-word';
+  } else {
+    proseEl.style.whiteSpace = 'pre';
+    proseEl.style.overflowWrap = '';
+  }
+  document.getElementById('btn-wrap').classList.toggle('active', wordWrap);
+}
+
+function collectSettings() {
+  const sidebar = document.getElementById('sidebar');
+  return {
+    fontSize,
+    fontFamily: currentFontFamily,
+    wordWrap,
+    isDarkTheme,
+    leftBgColor,
+    rightBgColor,
+    proseBgColor,
+    sidebarVisible,
+    sidebarWidth: sidebar.style.width || null,
+    minimapVisible,
+  };
+}
+
+function applySettings(s) {
+  if (!s) return;
+  if (typeof s.fontSize === 'number') setFontSize(s.fontSize);
+  if (s.fontFamily) {
+    document.getElementById('font-select').value = s.fontFamily;
+    setEditorFont(s.fontFamily);
+  }
+  if (typeof s.wordWrap === 'boolean' && s.wordWrap !== wordWrap) toggleWordWrap();
+  if (s.isDarkTheme === false && isDarkTheme) toggleTheme();
+  if (s.leftBgColor || s.rightBgColor || s.proseBgColor) {
+    leftBgColor = s.leftBgColor || null;
+    rightBgColor = s.rightBgColor || null;
+    proseBgColor = s.proseBgColor || null;
+    applyPaneThemes();
+    document.getElementById('prose-editor').style.background = proseBgColor || '';
+    if (leftBgColor) document.getElementById('bg-color').value = leftBgColor;
+  }
+  if (s.sidebarVisible === false && sidebarVisible) toggleSidebar();
+  if (s.sidebarWidth) document.getElementById('sidebar').style.width = s.sidebarWidth;
+  if (s.minimapVisible && !minimapVisible) toggleMinimap();
+}
+
 function applyPaneThemes() {
   editorView.dispatch({
     effects: fontCompartment.reconfigure(paneTheme(currentFontFamily, leftBgColor)),
@@ -1180,7 +1279,7 @@ async function loadFolderTree(folderPath) {
   rootDiv.className = 'tree-item';
   rootDiv.style.paddingLeft = '4px';
   rootDiv.style.fontWeight = '600';
-  rootDiv.innerHTML = `<span class="tree-icon folder">&#9660;</span><span class="tree-label">${rootLabel}</span>`;
+  rootDiv.innerHTML = `<span class="tree-icon folder">&#9660;</span><span class="tree-label">${escapeHtml(rootLabel)}</span>`;
   container.appendChild(rootDiv);
 
   const childrenDiv = document.createElement('div');
@@ -1208,7 +1307,7 @@ async function populateTreeLevel(parentEl, dirPath, depth) {
     itemDiv.style.paddingLeft = (depth * 16 + 4) + 'px';
 
     if (item.isDirectory) {
-      itemDiv.innerHTML = `<span class="tree-icon folder">&#9654;</span><span class="tree-label">${item.name}</span>`;
+      itemDiv.innerHTML = `<span class="tree-icon folder">&#9654;</span><span class="tree-label">${escapeHtml(item.name)}</span>`;
 
       const childrenDiv = document.createElement('div');
       childrenDiv.className = 'tree-children';
@@ -1227,7 +1326,7 @@ async function populateTreeLevel(parentEl, dirPath, depth) {
       parentEl.appendChild(itemDiv);
       parentEl.appendChild(childrenDiv);
     } else {
-      itemDiv.innerHTML = `<span class="tree-icon file">&#9679;</span><span class="tree-label">${item.name}</span>`;
+      itemDiv.innerHTML = `<span class="tree-icon file">&#9679;</span><span class="tree-label">${escapeHtml(item.name)}</span>`;
       itemDiv.addEventListener('click', () => openFileFromPath(item.path));
       parentEl.appendChild(itemDiv);
     }
@@ -1253,7 +1352,7 @@ async function loadRecentFiles() {
     const name = filePath.replace(/\\/g, '/').split('/').pop();
     const dir = filePath.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
 
-    item.innerHTML = `<span class="recent-name">${name}</span><span class="recent-path">${dir}</span>`;
+    item.innerHTML = `<span class="recent-name">${escapeHtml(name)}</span><span class="recent-path">${escapeHtml(dir)}</span>`;
     item.addEventListener('click', () => openFileFromPath(filePath));
     container.appendChild(item);
   }
@@ -1440,7 +1539,7 @@ function initMinimap() {
     editorView.scrollDOM.scrollTop = ratio * (scrollHeight - clientHeight);
   });
 
-  const observer = new MutationObserver(() => {
+  window.addEventListener('resize', () => {
     if (minimapVisible) requestAnimationFrame(renderMinimap);
   });
 
@@ -1505,7 +1604,8 @@ function lineOperation(type) {
     endLine = doc.lines;
   } else {
     startLine = doc.lineAt(from).number;
-    endLine = doc.lineAt(to).number;
+    const endPos = doc.lineAt(to).from === to ? to - 1 : to;
+    endLine = doc.lineAt(endPos).number;
   }
 
   const lines = [];
@@ -1610,20 +1710,28 @@ function scheduleSplitAutoSave() {
   if (splitAutoSaveTimer) clearTimeout(splitAutoSaveTimer);
   splitAutoSaveTimer = setTimeout(async () => {
     if (!splitEditorView || !splitFilePath || !splitModified) return;
-    if (await saveSplitFile()) flashAutoSaveIndicator();
+    if (await saveSplitFile({ silent: true })) {
+      flashAutoSaveIndicator();
+    } else {
+      flashAutoSaveIndicator('Auto-save failed', '#e05a5a');
+    }
   }, AUTO_SAVE_DELAY);
 }
 
-async function saveSplitFile() {
+async function saveSplitFile(opts = {}) {
   if (!splitEditorView || !splitFilePath || !window.electronAPI) return false;
   const content = splitEditorView.state.doc.toString();
   const result = await window.electronAPI.saveFile({
     filePath: splitFilePath,
     content: content.replace(/\n/g, splitEol),
   });
-  if (!result.success) return false;
+  if (!result.success) {
+    if (!opts.silent) reportSaveError(splitFilePath, result.error);
+    return false;
+  }
   splitSavedContent = content;
   splitModified = false;
+  updateStatusBar();
   return true;
 }
 
@@ -1634,10 +1742,17 @@ async function saveSplitFileAs() {
     content: content.replace(/\n/g, splitEol),
     defaultPath: splitFilePath || 'untitled.txt',
   });
-  if (!result.success) return false;
+  if (!result.success) {
+    if (!result.canceled) reportSaveError(result.filePath || 'file', result.error);
+    return false;
+  }
   splitFilePath = result.filePath;
   splitSavedContent = content;
   splitModified = false;
+  splitEditorView.dispatch({
+    effects: splitLanguageCompartment.reconfigure(getLanguageExtension(splitFilePath)),
+  });
+  updateStatusBar();
   return true;
 }
 
@@ -1951,32 +2066,44 @@ function computeCompareRanges(leftContent, rightContent) {
   }
 }
 
+let compareScrollCleanup = null;
+
 function syncCompareScroll() {
   if (!editorView || !splitEditorView) return;
+  if (compareScrollCleanup) compareScrollCleanup();
 
   let syncing = false;
 
   const leftScroller = editorView.scrollDOM;
   const rightScroller = splitEditorView.scrollDOM;
 
-  leftScroller.addEventListener('scroll', () => {
+  const onLeft = () => {
     if (syncing) return;
     syncing = true;
     rightScroller.scrollTop = leftScroller.scrollTop;
     syncing = false;
-  });
-
-  rightScroller.addEventListener('scroll', () => {
+  };
+  const onRight = () => {
     if (syncing) return;
     syncing = true;
     leftScroller.scrollTop = rightScroller.scrollTop;
     syncing = false;
-  });
+  };
+
+  leftScroller.addEventListener('scroll', onLeft);
+  rightScroller.addEventListener('scroll', onRight);
+
+  compareScrollCleanup = () => {
+    leftScroller.removeEventListener('scroll', onLeft);
+    rightScroller.removeEventListener('scroll', onRight);
+    compareScrollCleanup = null;
+  };
 }
 
 function closeCompare() {
   compareMode = false;
   compareRightPath = null;
+  if (compareScrollCleanup) compareScrollCleanup();
 
   leftCompareRanges = [];
   rightCompareRanges = [];
@@ -2108,28 +2235,7 @@ function wireEvents() {
   document.getElementById('btn-save').addEventListener('click', () => saveCurrentFile());
   document.getElementById('btn-save-as').addEventListener('click', () => saveCurrentFileAs());
 
-  const toggleWrap = () => {
-    wordWrap = !wordWrap;
-    const wrapExt = wordWrap ? EditorView.lineWrapping : [];
-    editorView.dispatch({
-      effects: wrapCompartment.reconfigure(wrapExt),
-    });
-    if (splitEditorView) {
-      splitEditorView.dispatch({
-        effects: splitWrapCompartment.reconfigure(wrapExt),
-      });
-    }
-    const proseEl = document.getElementById('prose-editor');
-    if (wordWrap) {
-      proseEl.style.whiteSpace = 'pre-wrap';
-      proseEl.style.overflowWrap = 'break-word';
-    } else {
-      proseEl.style.whiteSpace = 'pre';
-      proseEl.style.overflowWrap = '';
-    }
-    document.getElementById('btn-wrap').classList.toggle('active', wordWrap);
-  };
-  document.getElementById('btn-wrap').addEventListener('click', toggleWrap);
+  document.getElementById('btn-wrap').addEventListener('click', toggleWordWrap);
 
   document.getElementById('btn-find').addEventListener('click', openFind);
   document.getElementById('btn-replace').addEventListener('click', openFind);
@@ -2224,7 +2330,7 @@ function wireEvents() {
     window.electronAPI.onMenuFind(openFind);
     window.electronAPI.onMenuReplace(openFind);
     window.electronAPI.onMenuGotoLine(showGotoLineDialog);
-    window.electronAPI.onMenuToggleWrap(toggleWrap);
+    window.electronAPI.onMenuToggleWrap(toggleWordWrap);
     window.electronAPI.onMenuToggleSidebar(toggleSidebar);
     window.electronAPI.onMenuToggleMinimap(toggleMinimap);
     window.electronAPI.onMenuFoldAll(() => foldAll(activeView()));
@@ -2277,6 +2383,7 @@ function wireEvents() {
 document.addEventListener('DOMContentLoaded', () => {
   initEditor();
   wireEvents();
+  setEditorFont(document.getElementById('font-select').value);
   initSidebarTabs();
   initSidebarResize();
   initSplitGutter();

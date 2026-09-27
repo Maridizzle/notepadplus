@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     webUtils && webUtils.getPathForFile ? webUtils.getPathForFile(file) : file.path,
   confirmClose: (data) => ipcRenderer.invoke('confirm-close', data),
   closeConfirmed: () => ipcRenderer.send('close-confirmed'),
+  showError: (data) => ipcRenderer.invoke('show-error', data),
   onRequestClose: (callback) => ipcRenderer.on('request-close', () => callback()),
   openFile: () => ipcRenderer.invoke('dialog-open'),
   openFolder: () => ipcRenderer.invoke('dialog-open-folder'),
