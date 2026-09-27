@@ -293,6 +293,43 @@ body.light-theme #tab-context-menu {
   background: linear-gradient(180deg, #e8e4da, #dcd8ce);
 }
 
+#tab-context-menu {
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.fn-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+  user-select: none;
+}
+
+.fn-item:hover {
+  background: var(--bg-hover);
+}
+
+.fn-kind {
+  flex-shrink: 0;
+  font-size: 9px;
+  letter-spacing: 0.3px;
+  color: var(--oxidized-brass);
+  text-transform: uppercase;
+  min-width: 42px;
+}
+
+.fn-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 #tab-context-menu .ctx-item.checked::before {
   content: '\2713 ';
 }

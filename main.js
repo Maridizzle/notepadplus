@@ -270,6 +270,8 @@ app.on('open-file', (event, filePath) => {
   openPathsInRenderer([filePath]);
 });
 
+let languageList = [];
+
 function buildMenu() {
   const cmd = (label, name, extra = {}) => ({ label, click: () => send(name, extra.arg), ...extra });
 
@@ -285,6 +287,7 @@ function buildMenu() {
         cmd('Save As...', 'save-as', { accelerator: 'CmdOrCtrl+Alt+S' }),
         cmd('Save a Copy As...', 'save-copy-as'),
         cmd('Save All', 'save-all', { accelerator: 'CmdOrCtrl+Shift+S' }),
+        cmd('Rename...', 'rename'),
         { type: 'separator' },
         cmd('Close', 'close', { accelerator: 'CmdOrCtrl+W' }),
         cmd('Close All', 'close-all', { accelerator: 'CmdOrCtrl+Shift+W' }),
@@ -303,6 +306,8 @@ function buildMenu() {
         cmd('Open in Default Viewer', 'open-default-viewer'),
         { type: 'separator' },
         cmd('File Summary...', 'summary'),
+        { type: 'separator' },
+        cmd('Print...', 'print', { accelerator: 'CmdOrCtrl+P' }),
         { type: 'separator' },
         { label: 'Exit', accelerator: 'CmdOrCtrl+Q', click: () => app.quit() },
       ],
@@ -425,6 +430,12 @@ function buildMenu() {
           ],
         },
       ],
+    },
+    {
+      label: 'Language',
+      submenu: languageList.length
+        ? languageList.map(l => cmd(l.name, 'set-language', { arg: l.key }))
+        : [{ label: '(loading)', enabled: false }],
     },
     {
       label: 'View',
@@ -641,6 +652,49 @@ ipcMain.handle('file-read', async (event, { filePath, encoding }) => {
   } catch (err) {
     return { success: false, error: err.message };
   }
+});
+
+ipcMain.on('language-list', (event, list) => {
+  if (Array.isArray(list)) {
+    languageList = list.filter(l => l && typeof l.key === 'string' && typeof l.name === 'string');
+    Menu.setApplicationMenu(buildMenu());
+  }
+});
+
+ipcMain.handle('file-rename', async (event, { oldPath, newPath }) => {
+  try {
+    if (fs.existsSync(newPath)) return { success: false, error: 'A file with that name already exists.' };
+    fs.renameSync(oldPath, newPath);
+    recentFiles = recentFiles.map(f => (f === oldPath ? newPath : f));
+    saveRecentFiles();
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+ipcMain.handle('print-text', async (event, { title, text, fontFamily, fontSize }) => {
+  const win = new BrowserWindow({
+    show: false,
+    parent: mainWindow || undefined,
+    webPreferences: { contextIsolation: true, sandbox: true },
+  });
+  const safeFont = String(fontFamily || 'monospace').replace(/[^A-Za-z0-9 ,'"\-]/g, '');
+  const safeSize = Math.max(6, Math.min(72, parseInt(fontSize, 10) || 10));
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title || 'Untitled')}</title>`
+    + `<style>body{margin:15mm;color:#000;background:#fff;font-family:${safeFont};font-size:${safeSize}pt;line-height:1.4;white-space:pre-wrap;word-wrap:break-word;}</style>`
+    + `</head><body>${escapeHtml(text || '')}</body></html>`;
+  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  return new Promise((resolve) => {
+    win.webContents.print({ printBackground: false }, (success, reason) => {
+      win.close();
+      resolve({ success, reason: reason || '' });
+    });
+  });
 });
 
 ipcMain.handle('find-in-files', async (event, opts) => {

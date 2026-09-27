@@ -90,6 +90,7 @@
       <div id="sidebar-tabs">
         <button class="sidebar-tab active" data-panel="file-tree">Files</button>
         <button class="sidebar-tab" data-panel="recent-files">Recent</button>
+        <button class="sidebar-tab" data-panel="function-list">Functions</button>
       </div>
       <div id="file-tree" class="sidebar-panel active">
         <div id="file-tree-content">
@@ -99,6 +100,11 @@
       <div id="recent-files" class="sidebar-panel">
         <div id="recent-files-content">
           <div class="sidebar-placeholder">No recent files</div>
+        </div>
+      </div>
+      <div id="function-list" class="sidebar-panel">
+        <div id="function-list-content">
+          <div class="sidebar-placeholder">No functions found</div>
         </div>
       </div>
     </div>
@@ -167,6 +173,17 @@
     <button id="prose-find-prev" title="Previous">&uarr;</button>
     <button id="prose-find-next" title="Next">&darr;</button>
     <button id="prose-find-close" title="Close">&times;</button>
+  </div>
+
+  <div id="rename-dialog" class="dialog-overlay hidden">
+    <div class="dialog-box">
+      <label for="rename-input">Rename:</label>
+      <input type="text" id="rename-input" placeholder="New name">
+      <div class="dialog-buttons">
+        <button id="rename-ok">Rename</button>
+        <button id="rename-cancel">Cancel</button>
+      </div>
+    </div>
   </div>
 
   <div id="goto-dialog" class="dialog-overlay hidden">

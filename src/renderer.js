@@ -3,7 +3,52 @@ import { EditorState, Compartment, RangeSetBuilder, StateEffect, StateField, Ran
 import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo, copyLineDown, moveLineUp, moveLineDown, toggleComment, toggleBlockComment } from '@codemirror/commands';
 import { searchKeymap, highlightSelectionMatches, openSearchPanel, closeSearchPanel } from '@codemirror/search';
 import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
-import { foldGutter, indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldKeymap, foldAll, unfoldAll } from '@codemirror/language';
+import { foldGutter, indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldKeymap, foldAll, unfoldAll, StreamLanguage, syntaxTree, ensureSyntaxTree } from '@codemirror/language';
+import { shell } from '@codemirror/legacy-modes/mode/shell';
+import { powerShell } from '@codemirror/legacy-modes/mode/powershell';
+import { yaml } from '@codemirror/legacy-modes/mode/yaml';
+import { toml } from '@codemirror/legacy-modes/mode/toml';
+import { lua } from '@codemirror/legacy-modes/mode/lua';
+import { ruby } from '@codemirror/legacy-modes/mode/ruby';
+import { perl } from '@codemirror/legacy-modes/mode/perl';
+import { go } from '@codemirror/legacy-modes/mode/go';
+import { swift } from '@codemirror/legacy-modes/mode/swift';
+import { csharp, kotlin, scala, dart, objectiveC } from '@codemirror/legacy-modes/mode/clike';
+import { haskell } from '@codemirror/legacy-modes/mode/haskell';
+import { erlang } from '@codemirror/legacy-modes/mode/erlang';
+import { r } from '@codemirror/legacy-modes/mode/r';
+import { pascal } from '@codemirror/legacy-modes/mode/pascal';
+import { fortran } from '@codemirror/legacy-modes/mode/fortran';
+import { vb } from '@codemirror/legacy-modes/mode/vb';
+import { vbScript } from '@codemirror/legacy-modes/mode/vbscript';
+import { tcl } from '@codemirror/legacy-modes/mode/tcl';
+import { scheme } from '@codemirror/legacy-modes/mode/scheme';
+import { commonLisp } from '@codemirror/legacy-modes/mode/commonlisp';
+import { clojure } from '@codemirror/legacy-modes/mode/clojure';
+import { stex } from '@codemirror/legacy-modes/mode/stex';
+import { nsis } from '@codemirror/legacy-modes/mode/nsis';
+import { cmake } from '@codemirror/legacy-modes/mode/cmake';
+import { groovy } from '@codemirror/legacy-modes/mode/groovy';
+import { julia } from '@codemirror/legacy-modes/mode/julia';
+import { octave } from '@codemirror/legacy-modes/mode/octave';
+import { sas } from '@codemirror/legacy-modes/mode/sas';
+import { verilog } from '@codemirror/legacy-modes/mode/verilog';
+import { vhdl } from '@codemirror/legacy-modes/mode/vhdl';
+import { coffeeScript } from '@codemirror/legacy-modes/mode/coffeescript';
+import { cobol } from '@codemirror/legacy-modes/mode/cobol';
+import { d } from '@codemirror/legacy-modes/mode/d';
+import { gas } from '@codemirror/legacy-modes/mode/gas';
+import { nginx } from '@codemirror/legacy-modes/mode/nginx';
+import { properties } from '@codemirror/legacy-modes/mode/properties';
+import { dockerFile } from '@codemirror/legacy-modes/mode/dockerfile';
+import { diff as diffMode } from '@codemirror/legacy-modes/mode/diff';
+import { crystal } from '@codemirror/legacy-modes/mode/crystal';
+import { elm } from '@codemirror/legacy-modes/mode/elm';
+import { oCaml, fSharp } from '@codemirror/legacy-modes/mode/mllike';
+import { smalltalk } from '@codemirror/legacy-modes/mode/smalltalk';
+import { protobuf } from '@codemirror/legacy-modes/mode/protobuf';
+import { sass } from '@codemirror/legacy-modes/mode/sass';
+import { stylus } from '@codemirror/legacy-modes/mode/stylus';
 import { oneDark } from '@codemirror/theme-one-dark';
 
 import { javascript } from '@codemirror/lang-javascript';
@@ -20,34 +65,149 @@ import { rust } from '@codemirror/lang-rust';
 import { sql } from '@codemirror/lang-sql';
 import * as Diff from 'diff';
 
-const LANGUAGES = {
-  '.js': { name: 'JavaScript', ext: javascript },
-  '.mjs': { name: 'JavaScript', ext: javascript },
-  '.jsx': { name: 'JSX', ext: () => javascript({ jsx: true }) },
-  '.ts': { name: 'TypeScript', ext: () => javascript({ typescript: true }) },
-  '.tsx': { name: 'TSX', ext: () => javascript({ typescript: true, jsx: true }) },
-  '.html': { name: 'HTML', ext: html },
-  '.htm': { name: 'HTML', ext: html },
-  '.css': { name: 'CSS', ext: css },
-  '.py': { name: 'Python', ext: python },
-  '.json': { name: 'JSON', ext: json },
-  '.md': { name: 'Markdown', ext: markdown },
-  '.markdown': { name: 'Markdown', ext: markdown },
-  '.xml': { name: 'XML', ext: xml },
-  '.svg': { name: 'XML', ext: xml },
-  '.c': { name: 'C', ext: cpp },
-  '.cpp': { name: 'C++', ext: cpp },
-  '.h': { name: 'C/C++ Header', ext: cpp },
-  '.hpp': { name: 'C++ Header', ext: cpp },
-  '.java': { name: 'Java', ext: java },
-  '.php': { name: 'PHP', ext: php },
-  '.rs': { name: 'Rust', ext: rust },
-  '.sql': { name: 'SQL', ext: sql },
-  '.txt': { name: 'Plain Text', ext: null },
-  '.log': { name: 'Plain Text', ext: null },
-  '.ini': { name: 'Plain Text', ext: null },
-  '.cfg': { name: 'Plain Text', ext: null },
+const stream = (mode) => () => StreamLanguage.define(mode);
+
+const LANG_DEFS = [
+  { key: 'plain', name: 'Plain Text', exts: ['.txt', '.log', '.text'], load: null },
+  { key: 'javascript', name: 'JavaScript', exts: ['.js', '.mjs', '.cjs'], load: () => javascript() },
+  { key: 'jsx', name: 'JSX', exts: ['.jsx'], load: () => javascript({ jsx: true }) },
+  { key: 'typescript', name: 'TypeScript', exts: ['.ts', '.mts', '.cts'], load: () => javascript({ typescript: true }) },
+  { key: 'tsx', name: 'TSX', exts: ['.tsx'], load: () => javascript({ typescript: true, jsx: true }) },
+  { key: 'html', name: 'HTML', exts: ['.html', '.htm', '.xhtml'], load: () => html() },
+  { key: 'css', name: 'CSS', exts: ['.css', '.scss', '.less'], load: () => css() },
+  { key: 'python', name: 'Python', exts: ['.py', '.pyw', '.pyi'], load: () => python() },
+  { key: 'json', name: 'JSON', exts: ['.json', '.json5', '.jsonc'], load: () => json() },
+  { key: 'markdown', name: 'Markdown', exts: ['.md', '.markdown', '.mdown'], load: () => markdown() },
+  { key: 'xml', name: 'XML', exts: ['.xml', '.svg', '.xsl', '.xslt', '.xsd', '.plist', '.csproj', '.vcxproj'], load: () => xml() },
+  { key: 'c', name: 'C', exts: ['.c', '.h'], load: () => cpp() },
+  { key: 'cpp', name: 'C++', exts: ['.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx', '.ino'], load: () => cpp() },
+  { key: 'java', name: 'Java', exts: ['.java'], load: () => java() },
+  { key: 'php', name: 'PHP', exts: ['.php', '.phtml'], load: () => php() },
+  { key: 'rust', name: 'Rust', exts: ['.rs'], load: () => rust() },
+  { key: 'sql', name: 'SQL', exts: ['.sql'], load: () => sql() },
+  { key: 'shell', name: 'Shell', exts: ['.sh', '.bash', '.zsh', '.ksh'], load: stream(shell) },
+  { key: 'powershell', name: 'PowerShell', exts: ['.ps1', '.psm1', '.psd1'], load: stream(powerShell) },
+  { key: 'yaml', name: 'YAML', exts: ['.yml', '.yaml'], load: stream(yaml) },
+  { key: 'toml', name: 'TOML', exts: ['.toml'], load: stream(toml) },
+  { key: 'ini', name: 'INI', exts: ['.ini', '.cfg', '.conf', '.properties', '.env'], load: stream(properties) },
+  { key: 'lua', name: 'Lua', exts: ['.lua'], load: stream(lua) },
+  { key: 'ruby', name: 'Ruby', exts: ['.rb', '.rake', '.gemspec'], load: stream(ruby) },
+  { key: 'perl', name: 'Perl', exts: ['.pl', '.pm', '.t'], load: stream(perl) },
+  { key: 'go', name: 'Go', exts: ['.go'], load: stream(go) },
+  { key: 'swift', name: 'Swift', exts: ['.swift'], load: stream(swift) },
+  { key: 'csharp', name: 'C#', exts: ['.cs'], load: stream(csharp) },
+  { key: 'kotlin', name: 'Kotlin', exts: ['.kt', '.kts'], load: stream(kotlin) },
+  { key: 'scala', name: 'Scala', exts: ['.scala', '.sc'], load: stream(scala) },
+  { key: 'dart', name: 'Dart', exts: ['.dart'], load: stream(dart) },
+  { key: 'objectivec', name: 'Objective-C', exts: ['.mm'], load: stream(objectiveC) },
+  { key: 'haskell', name: 'Haskell', exts: ['.hs', '.lhs'], load: stream(haskell) },
+  { key: 'erlang', name: 'Erlang', exts: ['.erl', '.hrl'], load: stream(erlang) },
+  { key: 'r', name: 'R', exts: ['.r', '.rmd'], load: stream(r) },
+  { key: 'pascal', name: 'Pascal', exts: ['.pas', '.pp', '.dpr'], load: stream(pascal) },
+  { key: 'fortran', name: 'Fortran', exts: ['.f', '.for', '.f90', '.f95', '.f03'], load: stream(fortran) },
+  { key: 'vb', name: 'Visual Basic', exts: ['.vb', '.bas'], load: stream(vb) },
+  { key: 'vbscript', name: 'VBScript', exts: ['.vbs'], load: stream(vbScript) },
+  { key: 'tcl', name: 'TCL', exts: ['.tcl'], load: stream(tcl) },
+  { key: 'scheme', name: 'Scheme', exts: ['.scm', '.ss', '.rkt'], load: stream(scheme) },
+  { key: 'lisp', name: 'Lisp', exts: ['.lisp', '.cl', '.el'], load: stream(commonLisp) },
+  { key: 'clojure', name: 'Clojure', exts: ['.clj', '.cljs', '.edn'], load: stream(clojure) },
+  { key: 'latex', name: 'LaTeX', exts: ['.tex', '.latex', '.sty', '.bib'], load: stream(stex) },
+  { key: 'nsis', name: 'NSIS', exts: ['.nsi', '.nsh'], load: stream(nsis) },
+  { key: 'cmake', name: 'CMake', exts: ['.cmake'], load: stream(cmake) },
+  { key: 'groovy', name: 'Groovy', exts: ['.groovy', '.gradle', '.gvy'], load: stream(groovy) },
+  { key: 'julia', name: 'Julia', exts: ['.jl'], load: stream(julia) },
+  { key: 'matlab', name: 'MATLAB', exts: ['.m'], load: stream(octave) },
+  { key: 'sas', name: 'SAS', exts: ['.sas'], load: stream(sas) },
+  { key: 'verilog', name: 'Verilog', exts: ['.v', '.sv', '.svh'], load: stream(verilog) },
+  { key: 'vhdl', name: 'VHDL', exts: ['.vhd', '.vhdl'], load: stream(vhdl) },
+  { key: 'coffeescript', name: 'CoffeeScript', exts: ['.coffee'], load: stream(coffeeScript) },
+  { key: 'cobol', name: 'COBOL', exts: ['.cob', '.cbl', '.cpy'], load: stream(cobol) },
+  { key: 'd', name: 'D', exts: ['.d'], load: stream(d) },
+  { key: 'assembly', name: 'Assembly', exts: ['.s', '.asm'], load: stream(gas) },
+  { key: 'nginx', name: 'NGINX', exts: [], load: stream(nginx) },
+  { key: 'dockerfile', name: 'Dockerfile', exts: ['.dockerfile'], load: stream(dockerFile) },
+  { key: 'diff', name: 'Diff', exts: ['.diff', '.patch'], load: stream(diffMode) },
+  { key: 'crystal', name: 'Crystal', exts: ['.cr'], load: stream(crystal) },
+  { key: 'elm', name: 'Elm', exts: ['.elm'], load: stream(elm) },
+  { key: 'ocaml', name: 'OCaml', exts: ['.ml', '.mli'], load: stream(oCaml) },
+  { key: 'fsharp', name: 'F#', exts: ['.fs', '.fsx', '.fsi'], load: stream(fSharp) },
+  { key: 'smalltalk', name: 'Smalltalk', exts: ['.st'], load: stream(smalltalk) },
+  { key: 'protobuf', name: 'Protocol Buffers', exts: ['.proto'], load: stream(protobuf) },
+  { key: 'sass', name: 'Sass', exts: ['.sass'], load: stream(sass) },
+  { key: 'stylus', name: 'Stylus', exts: ['.styl'], load: stream(stylus) },
+];
+
+const LANG_BY_KEY = Object.fromEntries(LANG_DEFS.map(l => [l.key, l]));
+const LANG_BY_EXT = {};
+for (const lang of LANG_DEFS) for (const ext of lang.exts) LANG_BY_EXT[ext] = lang.key;
+
+const LANG_BY_FILENAME = {
+  'dockerfile': 'dockerfile',
+  'containerfile': 'dockerfile',
+  'cmakelists.txt': 'cmake',
+  'nginx.conf': 'nginx',
+  'makefile': 'shell',
+  'gnumakefile': 'shell',
+  'rakefile': 'ruby',
+  'gemfile': 'ruby',
+  'vagrantfile': 'ruby',
+  '.bashrc': 'shell',
+  '.bash_profile': 'shell',
+  '.zshrc': 'shell',
+  '.profile': 'shell',
+  '.gitconfig': 'ini',
+  '.editorconfig': 'ini',
+  'package.json': 'json',
 };
+
+const SHEBANG_RULES = [
+  [/python/, 'python'],
+  [/node|deno|bun/, 'javascript'],
+  [/\b(ba|z|k|da)?sh\b/, 'shell'],
+  [/perl/, 'perl'],
+  [/ruby/, 'ruby'],
+  [/php/, 'php'],
+  [/lua/, 'lua'],
+  [/pwsh|powershell/, 'powershell'],
+  [/tclsh|wish/, 'tcl'],
+];
+
+const langExtCache = new Map();
+
+function languageExtensionFor(key) {
+  const lang = LANG_BY_KEY[key];
+  if (!lang || !lang.load) return [];
+  if (!langExtCache.has(key)) langExtCache.set(key, lang.load());
+  return [langExtCache.get(key)];
+}
+
+function languageName(key) {
+  return (LANG_BY_KEY[key] || LANG_BY_KEY.plain).name;
+}
+
+function detectLanguageKey(filePath, content) {
+  if (filePath) {
+    const name = getFileName(filePath).toLowerCase();
+    if (LANG_BY_FILENAME[name]) return LANG_BY_FILENAME[name];
+    const ext = getFileExtension(filePath);
+    if (ext && LANG_BY_EXT[ext]) return LANG_BY_EXT[ext];
+  }
+  if (content && content.startsWith('#!')) {
+    const firstLine = content.slice(0, content.indexOf('\n') < 0 ? content.length : content.indexOf('\n'));
+    for (const [re, key] of SHEBANG_RULES) {
+      if (re.test(firstLine)) return key;
+    }
+  }
+  if (content && /^\s*<\?xml/.test(content)) return 'xml';
+  if (content && /^\s*<(!doctype html|html)/i.test(content)) return 'html';
+  return 'plain';
+}
+
+function languageMenuList() {
+  return LANG_DEFS
+    .map(l => ({ key: l.key, name: l.name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
 
 const languageCompartment = new Compartment();
 const wrapCompartment = new Compartment();
@@ -474,16 +634,14 @@ function getFileName(filePath) {
   return filePath.replace(/\\/g, '/').split('/').pop();
 }
 
-function getLanguageForFile(filePath) {
-  const ext = getFileExtension(filePath);
-  return LANGUAGES[ext] || { name: 'Plain Text', ext: null };
+function getLanguageExtension(filePath, content) {
+  return languageExtensionFor(detectLanguageKey(filePath, content));
 }
 
-function getLanguageExtension(filePath) {
-  const lang = getLanguageForFile(filePath);
-  if (!lang.ext) return [];
-  const ext = typeof lang.ext === 'function' ? lang.ext() : lang.ext();
-  return [ext];
+function tabDisplayName(tab) {
+  if (!tab) return 'Untitled';
+  if (tab.filePath) return getFileName(tab.filePath);
+  return tab.title || 'Untitled';
 }
 
 function createTab(filePath, rawContent, opts = {}) {
@@ -499,6 +657,8 @@ function createTab(filePath, rawContent, opts = {}) {
     savedEol: null,
     encoding: opts.encoding || 'utf8',
     savedEncoding: null,
+    language: opts.language || detectLanguageKey(filePath, content),
+    title: opts.title || null,
     scrollPos: opts.scrollPos || 0,
     cursorPos: opts.cursorPos || 0,
     state: null,
@@ -519,7 +679,7 @@ function createTabState(tab) {
     selection: { anchor: pos },
     extensions: [
       ...mainExtensions(),
-      languageCompartment.of(getLanguageExtension(tab.filePath)),
+      languageCompartment.of(languageExtensionFor(tab.language)),
     ],
   });
 }
@@ -557,6 +717,8 @@ function getSessionState() {
       content: t.filePath ? null : t.content,
       cursorPos: t.cursorPos || 0,
       scrollPos: t.scrollPos || 0,
+      language: t.language,
+      title: t.title || null,
     })),
   };
 }
@@ -573,7 +735,12 @@ async function restoreSession(session) {
   renderTabs();
 
   for (const saved of session.tabs) {
-    const opts = { cursorPos: saved.cursorPos || 0, scrollPos: saved.scrollPos || 0 };
+    const opts = {
+      cursorPos: saved.cursorPos || 0,
+      scrollPos: saved.scrollPos || 0,
+      language: LANG_BY_KEY[saved.language] ? saved.language : undefined,
+      title: saved.title || null,
+    };
     if (saved.filePath) {
       try {
         const result = await window.electronAPI.readFile({ filePath: saved.filePath });
@@ -623,6 +790,7 @@ function switchToTab(id) {
   if (minimapVisible) requestAnimationFrame(renderMinimap);
   updateStatusBar();
   renderTabs();
+  scheduleFunctionListRefresh();
 }
 
 async function confirmDiscard(message) {
@@ -635,7 +803,7 @@ async function closeTab(id) {
   if (!tab) return;
 
   if (tab.modified) {
-    const choice = await confirmDiscard(`Save changes to ${getFileName(tab.filePath)}?`);
+    const choice = await confirmDiscard(`Save changes to ${tabDisplayName(tab)}?`);
     if (choice === 2) return;
     if (choice === 0) {
       const ok = await saveTab(tab);
@@ -674,7 +842,7 @@ function renderTabs() {
 
     const name = document.createElement('span');
     name.className = 'tab-name';
-    name.textContent = getFileName(tab.filePath);
+    name.textContent = tabDisplayName(tab);
 
     const modified = document.createElement('span');
     modified.className = 'tab-modified';
@@ -852,7 +1020,9 @@ function showTabContextMenu(e, tab) {
     null,
     ['Save', () => saveTab(tab)],
     ['Save As...', () => saveTabAs(tab)],
+    ['Rename...', () => showRenameDialog(tab)],
     ['Reload from Disk', () => reloadTab(tab), !tab.filePath],
+    ['Print...', () => printTab(tab)],
     null,
     ['Copy Full Path', () => copyToClipboard(tab.filePath), !tab.filePath],
     ['Copy File Name', () => copyToClipboard(getFileName(tab.filePath)), !tab.filePath],
@@ -1073,6 +1243,261 @@ async function showSummary() {
   });
 }
 
+// Rename
+let renameTarget = null;
+
+function showRenameDialog(tab) {
+  const target = tab ? { kind: 'tab', tab } : (rightPaneTarget() === 'file' ? { kind: 'split' } : { kind: 'tab', tab: getActiveTab() });
+  if (target.kind === 'tab' && !target.tab) return;
+  if (target.kind === 'tab' && rightPaneTarget() === 'tab' && !tab) target.tab = tabs.find(t => t.id === splitTabId) || target.tab;
+  renameTarget = target;
+  const dialog = document.getElementById('rename-dialog');
+  const input = document.getElementById('rename-input');
+  const current = target.kind === 'split' ? getFileName(splitFilePath) : tabDisplayName(target.tab);
+  input.value = current;
+  dialog.classList.remove('hidden');
+  input.focus();
+  const dot = current.lastIndexOf('.');
+  input.setSelectionRange(0, dot > 0 ? dot : current.length);
+}
+
+function hideRenameDialog() {
+  document.getElementById('rename-dialog').classList.add('hidden');
+  renameTarget = null;
+  activeView().focus();
+}
+
+async function executeRename() {
+  const target = renameTarget;
+  const newName = document.getElementById('rename-input').value.trim();
+  if (!target || !newName || /[\\/]/.test(newName)) {
+    hideRenameDialog();
+    return;
+  }
+
+  if (target.kind === 'tab' && !target.tab.filePath) {
+    target.tab.title = newName;
+    renderTabs();
+    updateStatusBar();
+    hideRenameDialog();
+    return;
+  }
+
+  const oldPath = target.kind === 'split' ? splitFilePath : target.tab.filePath;
+  const sep = oldPath.includes('\\') ? '\\' : '/';
+  const dir = oldPath.slice(0, oldPath.lastIndexOf(sep));
+  const newPath = dir + sep + newName;
+  hideRenameDialog();
+  if (newPath === oldPath) return;
+
+  const result = await window.electronAPI.renameFile({ oldPath, newPath });
+  if (!result.success) {
+    reportSaveError(oldPath, result.error);
+    return;
+  }
+
+  if (target.kind === 'split') {
+    splitFilePath = newPath;
+    splitLanguage = detectLanguageKey(newPath, splitEditorView.state.doc.toString());
+    splitEditorView.dispatch({ effects: splitLanguageCompartment.reconfigure(languageExtensionFor(splitLanguage)) });
+  } else {
+    target.tab.filePath = newPath;
+    target.tab.language = detectLanguageKey(newPath, tabContent(target.tab));
+    applyTabLanguage(target.tab);
+  }
+  await window.electronAPI.trackRecentFile({ filePath: newPath });
+  renderTabs();
+  updateStatusBar();
+}
+
+function initRenameDialog() {
+  document.getElementById('rename-ok').addEventListener('click', executeRename);
+  document.getElementById('rename-cancel').addEventListener('click', hideRenameDialog);
+  document.getElementById('rename-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') executeRename();
+    if (e.key === 'Escape') hideRenameDialog();
+  });
+  document.getElementById('rename-dialog').addEventListener('click', (e) => {
+    if (e.target.classList.contains('dialog-overlay')) hideRenameDialog();
+  });
+}
+
+// Print
+function printTab(tab) {
+  if (!window.electronAPI || !window.electronAPI.printText) return;
+  const text = tab ? tabContent(tab) : statusTarget().view.state.doc.toString();
+  const title = tab ? tabDisplayName(tab) : (getFileName(statusTarget().filePath) || 'Untitled');
+  window.electronAPI.printText({
+    title,
+    text,
+    fontFamily: currentFontFamily || "'Consolas', 'Courier New', monospace",
+    fontSize: Math.max(6, Math.round(fontSize * 0.75)),
+  });
+}
+
+function printCurrent() {
+  const target = rightPaneTarget();
+  if (target === 'tab') return printTab(tabs.find(t => t.id === splitTabId));
+  if (target === 'file') return printTab(null);
+  return printTab(getActiveTab());
+}
+
+// Function list
+const FUNCTION_RULES = {
+  javascript: 'js', jsx: 'js', typescript: 'js', tsx: 'js',
+  python: 'python', java: 'java', c: 'cpp', cpp: 'cpp', php: 'php', rust: 'rust', css: 'css', markdown: 'markdown',
+};
+
+function firstNamedChildText(node, doc) {
+  let child = node.firstChild;
+  while (child && !/[A-Za-z]/.test(child.name[0])) child = child.nextSibling;
+  return child ? doc.sliceString(child.from, child.to) : null;
+}
+
+function childText(node, name, doc) {
+  const child = node.getChild(name);
+  return child ? doc.sliceString(child.from, child.to) : null;
+}
+
+function functionEntry(node, family, doc) {
+  const n = node.name;
+  switch (family) {
+    case 'js':
+      if (n === 'FunctionDeclaration') return { kind: 'fn', name: childText(node, 'VariableDefinition', doc) };
+      if (n === 'ClassDeclaration') return { kind: 'class', name: childText(node, 'VariableDefinition', doc) };
+      if (n === 'MethodDeclaration') return { kind: 'method', name: childText(node, 'PropertyDefinition', doc) };
+      if (n === 'InterfaceDeclaration') return { kind: 'interface', name: childText(node, 'TypeDefinition', doc) };
+      if (n === 'EnumDeclaration') return { kind: 'enum', name: childText(node, 'TypeDefinition', doc) };
+      if (n === 'TypeAliasDeclaration') return { kind: 'type', name: childText(node, 'TypeDefinition', doc) };
+      if (n === 'VariableDeclaration' && (node.getChild('ArrowFunction') || node.getChild('FunctionExpression'))) {
+        return { kind: 'fn', name: childText(node, 'VariableDefinition', doc) };
+      }
+      return null;
+    case 'python':
+      if (n === 'FunctionDefinition') return { kind: 'fn', name: childText(node, 'VariableName', doc) };
+      if (n === 'ClassDefinition') return { kind: 'class', name: childText(node, 'VariableName', doc) };
+      return null;
+    case 'java':
+      if (n === 'MethodDeclaration' || n === 'ConstructorDeclaration') return { kind: 'method', name: childText(node, 'Definition', doc) };
+      if (n === 'ClassDeclaration') return { kind: 'class', name: childText(node, 'Definition', doc) };
+      if (n === 'InterfaceDeclaration') return { kind: 'interface', name: childText(node, 'Definition', doc) };
+      if (n === 'EnumDeclaration') return { kind: 'enum', name: childText(node, 'Definition', doc) };
+      return null;
+    case 'cpp':
+      if (n === 'FunctionDefinition') {
+        const decl = node.getChild('FunctionDeclarator');
+        return { kind: 'fn', name: decl ? firstNamedChildText(decl, doc) : null };
+      }
+      if (n === 'ClassSpecifier') return { kind: 'class', name: childText(node, 'TypeIdentifier', doc) };
+      if (n === 'StructSpecifier') return { kind: 'struct', name: childText(node, 'TypeIdentifier', doc) };
+      if (n === 'NamespaceDefinition') return { kind: 'namespace', name: childText(node, 'Identifier', doc) };
+      return null;
+    case 'php':
+      if (n === 'FunctionDefinition') return { kind: 'fn', name: childText(node, 'Name', doc) };
+      if (n === 'MethodDeclaration') return { kind: 'method', name: childText(node, 'Name', doc) };
+      if (n === 'ClassDeclaration') return { kind: 'class', name: childText(node, 'Name', doc) };
+      if (n === 'InterfaceDeclaration') return { kind: 'interface', name: childText(node, 'Name', doc) };
+      if (n === 'TraitDeclaration') return { kind: 'trait', name: childText(node, 'Name', doc) };
+      return null;
+    case 'rust':
+      if (n === 'FunctionItem') return { kind: 'fn', name: childText(node, 'BoundIdentifier', doc) };
+      if (n === 'StructItem') return { kind: 'struct', name: childText(node, 'TypeIdentifier', doc) };
+      if (n === 'EnumItem') return { kind: 'enum', name: childText(node, 'TypeIdentifier', doc) };
+      if (n === 'ImplItem') return { kind: 'impl', name: childText(node, 'TypeIdentifier', doc) };
+      if (n === 'TraitItem') return { kind: 'trait', name: childText(node, 'TypeIdentifier', doc) };
+      return null;
+    case 'css':
+      if (n === 'RuleSet') {
+        const block = node.getChild('Block');
+        const end = block ? block.from : node.to;
+        return { kind: 'rule', name: doc.sliceString(node.from, end).replace(/\s+/g, ' ').trim() };
+      }
+      return null;
+    case 'markdown': {
+      const m = /^(?:ATX|Setext)Heading(\d)$/.exec(n);
+      if (m) {
+        const text = doc.sliceString(node.from, node.to).replace(/^#+\s*|\s*#+\s*$/g, '').replace(/\n[=-]+\s*$/, '').trim();
+        return { kind: 'h' + m[1], name: text };
+      }
+      return null;
+    }
+    default:
+      return null;
+  }
+}
+
+let functionListTimer = null;
+
+function functionListVisible() {
+  const panel = document.getElementById('function-list');
+  return panel && panel.classList.contains('active') && sidebarVisible;
+}
+
+function scheduleFunctionListRefresh() {
+  if (!functionListVisible()) return;
+  if (functionListTimer) clearTimeout(functionListTimer);
+  functionListTimer = setTimeout(refreshFunctionList, 400);
+}
+
+function refreshFunctionList() {
+  const container = document.getElementById('function-list-content');
+  if (!container) return;
+  const target = statusTarget();
+  const view = target.view;
+  const family = FUNCTION_RULES[target.language];
+  container.innerHTML = '';
+
+  if (!view || !family) {
+    container.innerHTML = `<div class="sidebar-placeholder">No function list for ${escapeHtml(languageName(target.language))}</div>`;
+    return;
+  }
+
+  const state = view.state;
+  const doc = state.doc;
+  const tree = ensureSyntaxTree(state, doc.length, 300) || syntaxTree(state);
+  const entries = [];
+  const stack = [];
+  tree.iterate({
+    enter(n) {
+      const entry = functionEntry(n.node, family, doc);
+      if (entry && entry.name) {
+        entries.push({ ...entry, from: n.from, depth: stack.length });
+        stack.push(n.to);
+      } else if (entry) {
+        return undefined;
+      }
+      return undefined;
+    },
+    leave(n) {
+      if (stack.length && stack[stack.length - 1] === n.to) {
+        const entry = functionEntry(n.node, family, doc);
+        if (entry && entry.name) stack.pop();
+      }
+    },
+  });
+
+  if (!entries.length) {
+    container.innerHTML = '<div class="sidebar-placeholder">No functions found</div>';
+    return;
+  }
+
+  for (const entry of entries) {
+    const item = document.createElement('div');
+    item.className = 'fn-item';
+    item.style.paddingLeft = (8 + entry.depth * 14) + 'px';
+    item.innerHTML = `<span class="fn-kind">${escapeHtml(entry.kind)}</span><span class="fn-name">${escapeHtml(entry.name)}</span>`;
+    item.title = `Line ${doc.lineAt(entry.from).number}`;
+    item.addEventListener('click', () => {
+      view.dispatch({
+        selection: { anchor: entry.from },
+        effects: EditorView.scrollIntoView(entry.from, { y: 'start', yMargin: 20 }),
+      });
+      view.focus();
+    });
+    container.appendChild(item);
+  }
+}
+
 function focusOtherView() {
   if (!splitEditorView) return;
   if (focusedPane === 'right') {
@@ -1103,7 +1528,7 @@ function setEol(eol) {
 function updateWindowTitle() {
   if (!window.electronAPI || !window.electronAPI.setTitle) return;
   const tab = getActiveTab();
-  const fileName = tab ? getFileName(tab.filePath) : 'Untitled';
+  const fileName = tabDisplayName(tab);
   const modified = tab && tab.modified ? ' *' : '';
   window.electronAPI.setTitle({ title: `${fileName}${modified} - NotepadPlus` });
 }
@@ -1112,16 +1537,16 @@ function statusTarget() {
   const tab = getActiveTab();
   const rightFocused = focusedPane === 'right' && splitEditorView;
   if (rightFocused && splitMode === 'file') {
-    return { filePath: splitFilePath, modified: splitModified, eol: splitEol, encoding: splitEncoding, view: splitEditorView };
+    return { filePath: splitFilePath, modified: splitModified, eol: splitEol, encoding: splitEncoding, language: splitLanguage, view: splitEditorView };
   }
   if (rightFocused && splitMode === 'tab') {
     const st = tabs.find(t => t.id === splitTabId) || tab;
-    return { filePath: st.filePath, modified: st.modified, eol: st.eol, encoding: st.encoding, view: splitEditorView };
+    return { filePath: st.filePath, modified: st.modified, eol: st.eol, encoding: st.encoding, language: st.language, view: splitEditorView };
   }
   if (rightFocused && splitMode === 'compare') {
-    return { filePath: compareRightPath, modified: false, eol: tab.eol, encoding: 'utf8', view: splitEditorView };
+    return { filePath: compareRightPath, modified: false, eol: tab.eol, encoding: 'utf8', language: detectLanguageKey(compareRightPath), view: splitEditorView };
   }
-  return { filePath: tab.filePath, modified: tab.modified, eol: tab.eol, encoding: tab.encoding, view: editorView };
+  return { filePath: tab.filePath, modified: tab.modified, eol: tab.eol, encoding: tab.encoding, language: tab.language, view: editorView };
 }
 
 function updateStatusBar() {
@@ -1129,11 +1554,10 @@ function updateStatusBar() {
   if (!tab) return;
   const target = statusTarget();
 
-  document.getElementById('status-file').textContent = target.filePath || 'Untitled';
+  document.getElementById('status-file').textContent = target.filePath || tabDisplayName(tab);
   document.getElementById('status-modified').textContent = target.modified ? '(Modified)' : '';
 
-  const lang = getLanguageForFile(target.filePath);
-  document.getElementById('status-lang').textContent = lang.name;
+  document.getElementById('status-lang').textContent = languageName(target.language);
   document.getElementById('status-encoding').textContent = encodingLabel(target.encoding);
   document.getElementById('status-eol').textContent = eolLabel(target.eol);
 
@@ -1201,7 +1625,7 @@ function reportSaveError(filePath, error) {
 }
 
 function applyTabLanguage(tab) {
-  const effect = languageCompartment.reconfigure(getLanguageExtension(tab.filePath));
+  const effect = languageCompartment.reconfigure(languageExtensionFor(tab.language));
   if (tab.id === activeTabId) {
     editorView.dispatch({ effects: effect });
   } else {
@@ -1209,9 +1633,32 @@ function applyTabLanguage(tab) {
   }
   if (splitMode === 'tab' && splitTabId === tab.id && splitEditorView) {
     splitEditorView.dispatch({
-      effects: splitLanguageCompartment.reconfigure(getLanguageExtension(tab.filePath)),
+      effects: splitLanguageCompartment.reconfigure(languageExtensionFor(tab.language)),
     });
   }
+  updateStatusBar();
+  if (functionListVisible()) refreshFunctionList();
+}
+
+function setLanguage(key) {
+  if (!LANG_BY_KEY[key]) return;
+  const target = rightPaneTarget();
+  if (target === 'file') {
+    splitLanguage = key;
+    splitEditorView.dispatch({ effects: splitLanguageCompartment.reconfigure(languageExtensionFor(key)) });
+    updateStatusBar();
+    if (functionListVisible()) refreshFunctionList();
+    return;
+  }
+  const tab = target === 'tab' ? tabs.find(t => t.id === splitTabId) : getActiveTab();
+  if (!tab) return;
+  tab.language = key;
+  applyTabLanguage(tab);
+}
+
+function showLanguageMenu(anchorEl) {
+  const current = statusTarget().language;
+  showStatusMenu(anchorEl, languageMenuList().map(l => [l.name, () => setLanguage(l.key), false, l.key === current]));
 }
 
 async function saveTab(tab, opts = {}) {
@@ -1246,6 +1693,8 @@ async function saveTabAs(tab) {
     return false;
   }
   tab.filePath = result.filePath;
+  tab.title = null;
+  tab.language = detectLanguageKey(tab.filePath, content);
   applyTabLanguage(tab);
   markTabSaved(tab, content);
   return true;
@@ -1341,6 +1790,7 @@ function mainExtensions() {
         markModified();
         mirrorChanges(splitEditorView, update);
         if (minimapVisible) requestAnimationFrame(renderMinimap);
+        scheduleFunctionListRefresh();
       }
       if (update.selectionSet || update.docChanged) {
         updateStatusBar();
@@ -2081,6 +2531,9 @@ function initSidebarTabs() {
       if (btn.dataset.panel === 'recent-files') {
         loadRecentFiles();
       }
+      if (btn.dataset.panel === 'function-list') {
+        refreshFunctionList();
+      }
     });
   });
 }
@@ -2417,6 +2870,7 @@ let splitEol = DEFAULT_EOL;
 let splitSavedEol = DEFAULT_EOL;
 let splitEncoding = 'utf8';
 let splitSavedEncoding = 'utf8';
+let splitLanguage = 'plain';
 let splitSavedContent = '';
 
 function computeSplitModified() {
@@ -2476,7 +2930,7 @@ function refreshSplitClone() {
   try {
     splitEditorView.dispatch({
       changes: { from: 0, to: splitEditorView.state.doc.length, insert: editorView.state.doc.toString() },
-      effects: splitLanguageCompartment.reconfigure(getLanguageExtension(tab.filePath)),
+      effects: splitLanguageCompartment.reconfigure(languageExtensionFor(tab.language)),
     });
   } finally {
     syncingSplit = false;
@@ -2532,8 +2986,9 @@ async function saveSplitFileAs() {
   splitSavedEol = splitEol;
   splitSavedEncoding = splitEncoding;
   splitModified = false;
+  splitLanguage = detectLanguageKey(splitFilePath, content);
   splitEditorView.dispatch({
-    effects: splitLanguageCompartment.reconfigure(getLanguageExtension(splitFilePath)),
+    effects: splitLanguageCompartment.reconfigure(languageExtensionFor(splitLanguage)),
   });
   updateStatusBar();
   return true;
@@ -2626,6 +3081,7 @@ function createSplitEditor(content, langExt, mode) {
   extensions.push(
     EditorView.updateListener.of((update) => {
       if (update.selectionSet || update.docChanged) updateStatusBar();
+      if (update.docChanged) scheduleFunctionListRefresh();
     })
   );
 
@@ -2681,7 +3137,7 @@ async function loadTabIntoSplitPane(tab) {
   if (tab.id === activeTabId && proseMode) syncProseToEditor();
 
   if (!splitView) showSplitLayout();
-  createSplitEditor(tabContent(tab), getLanguageExtension(tab.filePath), 'tab');
+  createSplitEditor(tabContent(tab), languageExtensionFor(tab.language), 'tab');
   splitTabId = tab.id;
   splitEditorView.focus();
   updateStatusBar();
@@ -2722,7 +3178,7 @@ async function toggleSplitView() {
   if (!splitEditorView) {
     const tab = getActiveTab();
     const content = editorView.state.doc.toString();
-    const langExt = tab ? getLanguageExtension(tab.filePath) : [];
+    const langExt = tab ? languageExtensionFor(tab.language) : [];
     createSplitEditor(content, langExt, 'clone');
   }
 }
@@ -2739,7 +3195,8 @@ async function loadFileIntoSplitPane(filePath) {
   if (!splitView) showSplitLayout();
 
   const content = normalizeNewlines(result.content);
-  createSplitEditor(content, getLanguageExtension(filePath), 'file');
+  splitLanguage = detectLanguageKey(filePath, content);
+  createSplitEditor(content, languageExtensionFor(splitLanguage), 'file');
   splitFilePath = filePath;
   splitEol = detectEol(result.content);
   splitSavedEol = splitEol;
@@ -2806,7 +3263,7 @@ async function startCompare(rightPath, rightContent) {
 
   editorView.dispatch({ effects: refreshDecorations.of(null) });
 
-  const langExt = getLanguageExtension(rightPath);
+  const langExt = getLanguageExtension(rightPath, rightContent);
   createSplitEditor(rightContent, langExt, 'compare');
 
   document.getElementById('compare-left-name').textContent = leftName;
@@ -3050,6 +3507,9 @@ const commands = {
   'set-eol': (eol) => setEol(eol),
   'set-encoding': (enc) => setEncoding(enc),
   'reopen-encoding': (enc) => reloadCurrent(enc),
+  'set-language': (key) => setLanguage(key),
+  'rename': () => showRenameDialog(null),
+  'print': () => printCurrent(),
   'find': () => openFind(),
   'replace': () => openFind(),
   'find-in-files': () => showFindInFiles(),
@@ -3198,6 +3658,10 @@ function initFindInFiles() {
   });
   document.getElementById('status-encoding').addEventListener('click', (e) => showEncodingMenu(e.currentTarget));
   document.getElementById('status-eol').addEventListener('click', (e) => showEolMenu(e.currentTarget));
+  document.getElementById('status-lang').addEventListener('click', (e) => showLanguageMenu(e.currentTarget));
+  if (window.electronAPI && window.electronAPI.setLanguageList) {
+    window.electronAPI.setLanguageList(languageMenuList());
+  }
 }
 
 function initTabShortcuts() {
@@ -3273,6 +3737,7 @@ function wireEvents() {
   document.getElementById('editor-split').addEventListener('focusin', () => {
     focusedPane = 'right';
     updateStatusBar();
+    scheduleFunctionListRefresh();
   });
 
   document.getElementById('btn-compare').addEventListener('click', openCompare);
@@ -3360,6 +3825,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initProseFind();
   initTabShortcuts();
   initFindInFiles();
+  initRenameDialog();
   initMinimap();
   loadRecentFiles();
 });
