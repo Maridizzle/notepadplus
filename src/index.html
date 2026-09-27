@@ -122,6 +122,36 @@
     </div>
   </div>
 
+  <div id="search-results" class="hidden">
+    <div id="search-results-header">
+      <span id="search-results-title">Search results</span>
+      <button id="search-results-close" title="Close">&times;</button>
+    </div>
+    <div id="search-results-list"></div>
+  </div>
+
+  <div id="find-files-dialog" class="dialog-overlay hidden">
+    <div class="dialog-box dialog-wide">
+      <label for="fif-query">Find in Files</label>
+      <input type="text" id="fif-query" placeholder="Find what">
+      <input type="text" id="fif-filters" placeholder="Filters, e.g. *.js *.md (blank = all files)">
+      <div class="dialog-row">
+        <input type="text" id="fif-dir" placeholder="Directory">
+        <button type="button" id="fif-use-current">Current</button>
+      </div>
+      <div class="dialog-checks">
+        <label><input type="checkbox" id="fif-case"> Match case</label>
+        <label><input type="checkbox" id="fif-word"> Whole word</label>
+        <label><input type="checkbox" id="fif-regex"> Regex</label>
+        <label><input type="checkbox" id="fif-sub" checked> Sub-folders</label>
+      </div>
+      <div class="dialog-buttons">
+        <button id="fif-ok">Find All</button>
+        <button id="fif-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <div id="compare-bar" class="hidden">
     <span>Comparing:</span>
     <span class="compare-filename" id="compare-left-name">Left</span>

@@ -293,6 +293,209 @@ body.light-theme #tab-context-menu {
   background: linear-gradient(180deg, #e8e4da, #dcd8ce);
 }
 
+#tab-context-menu .ctx-item.checked::before {
+  content: '\2713 ';
+}
+
+#status-encoding,
+#status-eol,
+#status-lang {
+  cursor: pointer;
+}
+
+#status-encoding:hover,
+#status-eol:hover,
+#status-lang:hover {
+  text-decoration: underline;
+}
+
+/* Bookmarks */
+.cm-bookmark-gutter {
+  width: 14px;
+  cursor: pointer;
+}
+
+.cm-bookmark-gutter .cm-gutterElement {
+  text-align: center;
+}
+
+.cm-bookmark-dot {
+  color: #4a9eff;
+  font-size: 10px;
+  line-height: inherit;
+}
+
+/* Find in Files */
+.dialog-box.dialog-wide {
+  min-width: 480px;
+}
+
+.dialog-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.dialog-row input {
+  margin-bottom: 0;
+  flex: 1;
+}
+
+.dialog-row button {
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 2px solid var(--char-black);
+  background: linear-gradient(180deg, #3d453d, #353a35);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.dialog-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.dialog-checks label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.dialog-checks input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+#search-results {
+  display: flex;
+  flex-direction: column;
+  height: 220px;
+  flex-shrink: 0;
+  border-top: 2px solid var(--char-black);
+  background: var(--bg-secondary);
+  font-size: 12px;
+}
+
+#search-results.hidden {
+  display: none;
+}
+
+#search-results-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  background: rgba(0, 0, 0, 0.15);
+  border-bottom: 1px solid var(--char-black);
+  color: var(--oxidized-brass);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.3px;
+}
+
+#search-results-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#search-results-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+#search-results-close:hover {
+  color: var(--text-active);
+}
+
+#search-results-list {
+  flex: 1;
+  overflow-y: auto;
+  font-family: 'Consolas', 'Fira Code', monospace;
+}
+
+.sr-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+  color: var(--accent);
+  background: rgba(0, 0, 0, 0.08);
+  user-select: none;
+}
+
+.sr-file:hover {
+  background: var(--bg-hover);
+}
+
+.sr-toggle {
+  font-size: 9px;
+  color: var(--text-secondary);
+  width: 10px;
+}
+
+.sr-path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sr-count {
+  color: var(--text-secondary);
+}
+
+.sr-matches.collapsed {
+  display: none;
+}
+
+.sr-match {
+  display: flex;
+  gap: 8px;
+  padding: 2px 10px 2px 26px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sr-match:hover {
+  background: var(--bg-hover);
+}
+
+.sr-line {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.sr-text {
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sr-empty {
+  padding: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+  font-family: inherit;
+}
+
 .cm-eol-marker {
   display: inline-block;
   font-size: 0.65em;

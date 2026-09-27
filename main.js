@@ -53,6 +53,178 @@ function send(name, arg) {
   if (mainWindow) mainWindow.webContents.send('menu-command', name, arg);
 }
 
+const CP1252_HIGH = [
+  0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+  0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+  0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+  0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
+];
+const CP1252_REVERSE = new Map(CP1252_HIGH.map((cp, i) => [cp, 0x80 + i]));
+
+function decodeAnsi(buf) {
+  const out = new Array(buf.length);
+  for (let i = 0; i < buf.length; i++) {
+    const b = buf[i];
+    out[i] = String.fromCharCode(b >= 0x80 && b <= 0x9F ? CP1252_HIGH[b - 0x80] : b);
+  }
+  return out.join('');
+}
+
+function encodeAnsi(str) {
+  const bytes = Buffer.alloc(str.length);
+  for (let i = 0; i < str.length; i++) {
+    const cp = str.charCodeAt(i);
+    if (cp < 0x80 || (cp >= 0xA0 && cp <= 0xFF)) bytes[i] = cp;
+    else if (CP1252_REVERSE.has(cp)) bytes[i] = CP1252_REVERSE.get(cp);
+    else bytes[i] = 0x3F;
+  }
+  return bytes;
+}
+
+function detectEncoding(buf) {
+  if (buf.length >= 3 && buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) return 'utf8bom';
+  if (buf.length >= 2 && buf[0] === 0xFF && buf[1] === 0xFE) return 'utf16le';
+  if (buf.length >= 2 && buf[0] === 0xFE && buf[1] === 0xFF) return 'utf16be';
+  const sample = buf.subarray(0, Math.min(buf.length, 4096));
+  if (sample.length >= 4) {
+    let oddNul = 0;
+    let evenNul = 0;
+    for (let i = 0; i < sample.length; i++) {
+      if (sample[i] === 0) {
+        if (i % 2) oddNul++;
+        else evenNul++;
+      }
+    }
+    const pairs = sample.length / 2;
+    if (oddNul > pairs * 0.3 && evenNul < pairs * 0.05) return 'utf16le';
+    if (evenNul > pairs * 0.3 && oddNul < pairs * 0.05) return 'utf16be';
+  }
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(buf);
+    return 'utf8';
+  } catch {
+    return 'ansi';
+  }
+}
+
+function decodeBuffer(buf, encoding) {
+  switch (encoding) {
+    case 'utf8bom':
+      return buf.toString('utf8', buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF ? 3 : 0);
+    case 'utf16le':
+      return buf.toString('utf16le', buf[0] === 0xFF && buf[1] === 0xFE ? 2 : 0);
+    case 'utf16be': {
+      const start = buf[0] === 0xFE && buf[1] === 0xFF ? 2 : 0;
+      let body = Buffer.from(buf.subarray(start));
+      if (body.length % 2) body = body.subarray(0, body.length - 1);
+      body.swap16();
+      return body.toString('utf16le');
+    }
+    case 'ansi':
+      return decodeAnsi(buf);
+    default:
+      return buf.toString('utf8');
+  }
+}
+
+function encodeString(str, encoding) {
+  switch (encoding) {
+    case 'utf8bom':
+      return Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(str, 'utf8')]);
+    case 'utf16le':
+      return Buffer.concat([Buffer.from([0xFF, 0xFE]), Buffer.from(str, 'utf16le')]);
+    case 'utf16be': {
+      const body = Buffer.from(str, 'utf16le');
+      body.swap16();
+      return Buffer.concat([Buffer.from([0xFE, 0xFF]), body]);
+    }
+    case 'ansi':
+      return encodeAnsi(str);
+    default:
+      return Buffer.from(str, 'utf8');
+  }
+}
+
+function readTextFile(filePath, forceEncoding) {
+  const buf = fs.readFileSync(filePath);
+  const encoding = forceEncoding || detectEncoding(buf);
+  return { content: decodeBuffer(buf, encoding), encoding };
+}
+
+function globToRegExp(glob) {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+  return new RegExp('^' + escaped + '$', 'i');
+}
+
+async function findInFiles(opts) {
+  const { dir, query, regex, matchCase, wholeWord, filters, subfolders } = opts;
+  if (!query) return { success: false, error: 'Nothing to search for.' };
+  let pattern;
+  try {
+    let src = regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (wholeWord) src = `\\b(?:${src})\\b`;
+    pattern = new RegExp(src, matchCase ? '' : 'i');
+  } catch (err) {
+    return { success: false, error: 'Invalid regular expression: ' + err.message };
+  }
+  const filterRes = (filters || '').split(/[\s,;]+/).filter(Boolean).map(globToRegExp);
+  const MAX_MATCHES = 5000;
+  const MAX_SIZE = 5 * 1024 * 1024;
+  const results = [];
+  let total = 0;
+  let filesSearched = 0;
+
+  async function walk(d) {
+    let entries;
+    try {
+      entries = await fs.promises.readdir(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (total >= MAX_MATCHES) return;
+      if (e.name.startsWith('.')) continue;
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) {
+        if (subfolders && e.name !== 'node_modules') await walk(p);
+        continue;
+      }
+      if (!e.isFile()) continue;
+      if (filterRes.length && !filterRes.some(r => r.test(e.name))) continue;
+      let buf;
+      try {
+        const st = await fs.promises.stat(p);
+        if (st.size > MAX_SIZE) continue;
+        buf = await fs.promises.readFile(p);
+      } catch {
+        continue;
+      }
+      const encoding = detectEncoding(buf);
+      if (encoding !== 'utf16le' && encoding !== 'utf16be' && buf.subarray(0, 8192).includes(0)) continue;
+      filesSearched++;
+      const lines = decodeBuffer(buf, encoding).split(/\r\n|\r|\n/);
+      const matches = [];
+      for (let i = 0; i < lines.length; i++) {
+        const m = pattern.exec(lines[i]);
+        if (m) {
+          matches.push({ line: i + 1, col: m.index + 1, text: lines[i].slice(0, 300) });
+          total++;
+          if (total >= MAX_MATCHES) break;
+        }
+      }
+      if (matches.length) results.push({ filePath: p, matches });
+    }
+  }
+
+  try {
+    if (!fs.statSync(dir).isDirectory()) return { success: false, error: 'Directory not found.' };
+  } catch {
+    return { success: false, error: 'Directory not found.' };
+  }
+  await walk(dir);
+  return { success: true, results, total, filesSearched, truncated: total >= MAX_MATCHES };
+}
+
 function filePathsFromArgv(argv, cwd) {
   return argv
     .slice(1)
@@ -71,9 +243,9 @@ function openPathsInRenderer(paths) {
   }
   for (const filePath of paths) {
     try {
-      const content = fs.readFileSync(filePath, 'utf-8');
+      const { content, encoding } = readTextFile(filePath);
       addRecentFile(filePath);
-      mainWindow.webContents.send('file-opened', { filePath, content });
+      mainWindow.webContents.send('file-opened', { filePath, content, encoding });
     } catch (err) {
       dialog.showErrorBox('Error', `Could not read file: ${err.message}`);
     }
@@ -205,10 +377,53 @@ function buildMenu() {
             cmd('Macintosh (CR)', 'set-eol', { arg: '\r' }),
           ],
         },
-        { type: 'separator' },
+      ],
+    },
+    {
+      label: 'Search',
+      submenu: [
         cmd('Find...', 'find', { accelerator: 'CmdOrCtrl+F' }),
         cmd('Replace...', 'replace', { accelerator: 'CmdOrCtrl+H' }),
+        cmd('Find in Files...', 'find-in-files', { accelerator: 'CmdOrCtrl+Shift+F' }),
+        { type: 'separator' },
         cmd('Go to Line...', 'goto-line', { accelerator: 'CmdOrCtrl+G' }),
+        { type: 'separator' },
+        {
+          label: 'Bookmark',
+          submenu: [
+            cmd('Toggle Bookmark', 'bookmark', { arg: 'toggle', accelerator: 'CmdOrCtrl+F2' }),
+            cmd('Next Bookmark', 'bookmark', { arg: 'next', accelerator: 'F2' }),
+            cmd('Previous Bookmark', 'bookmark', { arg: 'prev', accelerator: 'Shift+F2' }),
+            cmd('Clear All Bookmarks', 'bookmark', { arg: 'clear' }),
+            { type: 'separator' },
+            cmd('Cut Bookmarked Lines', 'bookmark', { arg: 'cut' }),
+            cmd('Copy Bookmarked Lines', 'bookmark', { arg: 'copy' }),
+            cmd('Remove Bookmarked Lines', 'bookmark', { arg: 'remove' }),
+            cmd('Remove Unmarked Lines', 'bookmark', { arg: 'remove-unmarked' }),
+            cmd('Inverse Bookmark', 'bookmark', { arg: 'inverse' }),
+          ],
+        },
+      ],
+    },
+    {
+      label: 'Encoding',
+      submenu: [
+        cmd('Convert to UTF-8', 'set-encoding', { arg: 'utf8' }),
+        cmd('Convert to UTF-8-BOM', 'set-encoding', { arg: 'utf8bom' }),
+        cmd('Convert to UTF-16 LE', 'set-encoding', { arg: 'utf16le' }),
+        cmd('Convert to UTF-16 BE', 'set-encoding', { arg: 'utf16be' }),
+        cmd('Convert to ANSI (Windows-1252)', 'set-encoding', { arg: 'ansi' }),
+        { type: 'separator' },
+        {
+          label: 'Reinterpret File As',
+          submenu: [
+            cmd('UTF-8', 'reopen-encoding', { arg: 'utf8' }),
+            cmd('UTF-8-BOM', 'reopen-encoding', { arg: 'utf8bom' }),
+            cmd('UTF-16 LE', 'reopen-encoding', { arg: 'utf16le' }),
+            cmd('UTF-16 BE', 'reopen-encoding', { arg: 'utf16be' }),
+            cmd('ANSI (Windows-1252)', 'reopen-encoding', { arg: 'ansi' }),
+          ],
+        },
       ],
     },
     {
@@ -389,7 +604,7 @@ ipcMain.handle('dialog-open-folder', async () => {
   await handleFolderOpen();
 });
 
-ipcMain.handle('dialog-save-as', async (event, { content, defaultPath }) => {
+ipcMain.handle('dialog-save-as', async (event, { content, defaultPath, encoding }) => {
   const result = await dialog.showSaveDialog(mainWindow, {
     defaultPath: defaultPath || 'untitled.txt',
     filters: [
@@ -400,7 +615,7 @@ ipcMain.handle('dialog-save-as', async (event, { content, defaultPath }) => {
 
   if (!result.canceled && result.filePath) {
     try {
-      fs.writeFileSync(result.filePath, content, 'utf-8');
+      fs.writeFileSync(result.filePath, encodeString(content, encoding || 'utf8'));
       return { success: true, filePath: result.filePath };
     } catch (err) {
       return { success: false, error: err.message };
@@ -409,20 +624,28 @@ ipcMain.handle('dialog-save-as', async (event, { content, defaultPath }) => {
   return { success: false, canceled: true };
 });
 
-ipcMain.handle('file-save', async (event, { filePath, content }) => {
+ipcMain.handle('file-save', async (event, { filePath, content, encoding }) => {
   try {
-    fs.writeFileSync(filePath, content, 'utf-8');
+    fs.writeFileSync(filePath, encodeString(content, encoding || 'utf8'));
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
   }
 });
 
-ipcMain.handle('file-read', async (event, { filePath }) => {
+ipcMain.handle('file-read', async (event, { filePath, encoding }) => {
   try {
-    const content = fs.readFileSync(filePath, 'utf-8');
+    const result = readTextFile(filePath, encoding);
     addRecentFile(filePath);
-    return { success: true, content };
+    return { success: true, content: result.content, encoding: result.encoding };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('find-in-files', async (event, opts) => {
+  try {
+    return await findInFiles(opts);
   } catch (err) {
     return { success: false, error: err.message };
   }

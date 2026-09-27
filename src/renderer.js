@@ -1,5 +1,5 @@
-import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, highlightWhitespace, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine, Decoration, ViewPlugin, WidgetType } from '@codemirror/view';
-import { EditorState, Compartment, RangeSetBuilder, StateEffect } from '@codemirror/state';
+import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, highlightWhitespace, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine, Decoration, ViewPlugin, WidgetType, gutter, GutterMarker } from '@codemirror/view';
+import { EditorState, Compartment, RangeSetBuilder, StateEffect, StateField, RangeSet } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo, copyLineDown, moveLineUp, moveLineDown, toggleComment, toggleBlockComment } from '@codemirror/commands';
 import { searchKeymap, highlightSelectionMatches, openSearchPanel, closeSearchPanel } from '@codemirror/search';
 import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
@@ -63,6 +63,190 @@ let showEol = false;
 
 function eolLabel(eol) {
   return eol === '\r\n' ? 'CRLF' : eol === '\r' ? 'CR' : 'LF';
+}
+
+const ENCODING_LABELS = {
+  utf8: 'UTF-8',
+  utf8bom: 'UTF-8-BOM',
+  utf16le: 'UTF-16 LE',
+  utf16be: 'UTF-16 BE',
+  ansi: 'ANSI',
+};
+
+function encodingLabel(enc) {
+  return ENCODING_LABELS[enc] || 'UTF-8';
+}
+
+// Bookmarks
+const bookmarkEffect = StateEffect.define({
+  map: (v, mapping) => ({ pos: mapping.mapPos(v.pos), on: v.on }),
+});
+const clearBookmarksEffect = StateEffect.define();
+
+const bookmarkMarker = new class extends GutterMarker {
+  toDOM() {
+    const span = document.createElement('span');
+    span.className = 'cm-bookmark-dot';
+    span.textContent = '●';
+    return span;
+  }
+}();
+
+function normalizeBookmarks(set, doc) {
+  const starts = new Set();
+  const iter = set.iter();
+  while (iter.value) {
+    starts.add(doc.lineAt(Math.min(iter.from, doc.length)).from);
+    iter.next();
+  }
+  return RangeSet.of([...starts].sort((a, b) => a - b).map(p => bookmarkMarker.range(p)));
+}
+
+const bookmarkField = StateField.define({
+  create() {
+    return RangeSet.empty;
+  },
+  update(set, tr) {
+    if (tr.docChanged) {
+      const oldDoc = tr.startState.doc;
+      const deleted = [];
+      tr.changes.iterChangedRanges((fromA, toA) => {
+        if (toA > fromA) deleted.push([fromA, toA]);
+      });
+      if (deleted.length) {
+        set = set.update({
+          filter: (from) => {
+            const line = oldDoc.lineAt(Math.min(from, oldDoc.length));
+            return !deleted.some(([a, b]) =>
+              (line.to < oldDoc.length && a <= line.from && b >= line.to + 1)
+              || (line.from > 0 && a <= line.from - 1 && b >= line.to));
+          },
+        });
+      }
+      set = set.map(tr.changes);
+      set = normalizeBookmarks(set, tr.state.doc);
+    }
+    for (const e of tr.effects) {
+      if (e.is(clearBookmarksEffect)) {
+        set = RangeSet.empty;
+      } else if (e.is(bookmarkEffect)) {
+        const lineFrom = tr.state.doc.lineAt(e.value.pos).from;
+        set = set.update({ filter: from => from !== lineFrom });
+        if (e.value.on) set = set.update({ add: [bookmarkMarker.range(lineFrom)] });
+      }
+    }
+    return set;
+  },
+});
+
+const bookmarkGutter = gutter({
+  class: 'cm-bookmark-gutter',
+  markers: v => v.state.field(bookmarkField),
+  initialSpacer: () => bookmarkMarker,
+  domEventHandlers: {
+    mousedown(view, line) {
+      toggleBookmark(view, line.from);
+      return true;
+    },
+  },
+});
+
+function bookmarkExtensions() {
+  return [bookmarkField, bookmarkGutter];
+}
+
+function bookmarkLines(state) {
+  const lines = new Set();
+  const iter = state.field(bookmarkField).iter();
+  while (iter.value) {
+    lines.add(state.doc.lineAt(iter.from).number);
+    iter.next();
+  }
+  return [...lines].sort((a, b) => a - b);
+}
+
+function toggleBookmark(view, pos = view.state.selection.main.head) {
+  const line = view.state.doc.lineAt(pos);
+  const on = !bookmarkLines(view.state).includes(line.number);
+  view.dispatch({ effects: bookmarkEffect.of({ pos: line.from, on }) });
+}
+
+function gotoBookmark(view, direction) {
+  const lines = bookmarkLines(view.state);
+  if (!lines.length) return;
+  const current = view.state.doc.lineAt(view.state.selection.main.head).number;
+  let target;
+  if (direction > 0) target = lines.find(n => n > current) ?? lines[0];
+  else target = [...lines].reverse().find(n => n < current) ?? lines[lines.length - 1];
+  const line = view.state.doc.line(target);
+  view.dispatch({
+    selection: { anchor: line.from },
+    effects: EditorView.scrollIntoView(line.from, { y: 'center' }),
+  });
+  view.focus();
+}
+
+function bookmarkedLineText(view, marked) {
+  const doc = view.state.doc;
+  const set = new Set(bookmarkLines(view.state));
+  const out = [];
+  for (let i = 1; i <= doc.lines; i++) {
+    if (set.has(i) === marked) out.push(doc.line(i).text);
+  }
+  return out;
+}
+
+function removeLines(view, predicate) {
+  const doc = view.state.doc;
+  const set = new Set(bookmarkLines(view.state));
+  const changes = [];
+  for (let i = 1; i <= doc.lines; i++) {
+    if (!predicate(set.has(i))) continue;
+    const line = doc.line(i);
+    const from = line.from;
+    const to = i < doc.lines ? doc.line(i + 1).from : line.to;
+    const adjFrom = i === doc.lines && i > 1 ? doc.line(i - 1).to : from;
+    changes.push({ from: i === doc.lines && i > 1 ? adjFrom : from, to });
+  }
+  if (!changes.length) return;
+  view.dispatch({ changes, effects: clearBookmarksEffect.of(null) });
+}
+
+function bookmarkCommand(action) {
+  const view = activeView();
+  if (!view) return;
+  const editable = editableView();
+  switch (action) {
+    case 'toggle': toggleBookmark(view); break;
+    case 'next': gotoBookmark(view, 1); break;
+    case 'prev': gotoBookmark(view, -1); break;
+    case 'clear': view.dispatch({ effects: clearBookmarksEffect.of(null) }); break;
+    case 'copy': copyToClipboard(bookmarkedLineText(view, true).join('\n')); break;
+    case 'cut':
+      if (!editable) return;
+      copyToClipboard(bookmarkedLineText(view, true).join('\n'));
+      removeLines(view, marked => marked);
+      break;
+    case 'remove':
+      if (!editable) return;
+      removeLines(view, marked => marked);
+      break;
+    case 'remove-unmarked':
+      if (!editable) return;
+      removeLines(view, marked => !marked);
+      break;
+    case 'inverse': {
+      const set = new Set(bookmarkLines(view.state));
+      const effects = [];
+      for (let i = 1; i <= view.state.doc.lines; i++) {
+        effects.push(bookmarkEffect.of({ pos: view.state.doc.line(i).from, on: !set.has(i) }));
+      }
+      view.dispatch({ effects });
+      break;
+    }
+    default:
+      break;
+  }
 }
 
 class EolWidget extends WidgetType {
@@ -313,11 +497,14 @@ function createTab(filePath, rawContent, opts = {}) {
     modified: false,
     eol: rawContent ? detectEol(rawContent) : DEFAULT_EOL,
     savedEol: null,
+    encoding: opts.encoding || 'utf8',
+    savedEncoding: null,
     scrollPos: opts.scrollPos || 0,
     cursorPos: opts.cursorPos || 0,
     state: null,
   };
   tab.savedEol = tab.eol;
+  tab.savedEncoding = tab.encoding;
   tab.state = createTabState(tab);
   tabs.push(tab);
   renderTabs();
@@ -391,7 +578,7 @@ async function restoreSession(session) {
       try {
         const result = await window.electronAPI.readFile({ filePath: saved.filePath });
         if (result.success) {
-          createTab(saved.filePath, result.content, opts);
+          createTab(saved.filePath, result.content, { ...opts, encoding: result.encoding });
         }
       } catch (e) {}
     } else if (saved.content) {
@@ -596,12 +783,67 @@ function hideTabContextMenu() {
   if (existing) existing.remove();
 }
 
-function showTabContextMenu(e, tab) {
-  e.preventDefault();
+function showPopupMenu(x, y, items) {
   hideTabContextMenu();
 
+  const menu = document.createElement('div');
+  menu.id = 'tab-context-menu';
+  for (const item of items) {
+    if (!item) {
+      const sep = document.createElement('div');
+      sep.className = 'ctx-sep';
+      menu.appendChild(sep);
+      continue;
+    }
+    const [label, action, disabled, checked] = item;
+    const el = document.createElement('div');
+    el.className = 'ctx-item' + (disabled ? ' disabled' : '') + (checked ? ' checked' : '');
+    el.textContent = label;
+    if (!disabled) {
+      el.addEventListener('click', () => {
+        hideTabContextMenu();
+        action();
+      });
+    }
+    menu.appendChild(el);
+  }
+
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  document.body.appendChild(menu);
+
+  const rect = menu.getBoundingClientRect();
+  if (rect.right > window.innerWidth) menu.style.left = Math.max(0, window.innerWidth - rect.width - 4) + 'px';
+  if (rect.bottom > window.innerHeight) menu.style.top = Math.max(0, window.innerHeight - rect.height - 4) + 'px';
+
+  const dismiss = (ev) => {
+    if (ev.type === 'keydown' && ev.key !== 'Escape') return;
+    if (ev.type === 'mousedown' && menu.contains(ev.target)) return;
+    hideTabContextMenu();
+    document.removeEventListener('mousedown', dismiss, true);
+    document.removeEventListener('keydown', dismiss, true);
+    window.removeEventListener('blur', dismiss);
+  };
+  document.addEventListener('mousedown', dismiss, true);
+  document.addEventListener('keydown', dismiss, true);
+  window.addEventListener('blur', dismiss);
+}
+
+function showStatusMenu(anchorEl, items) {
+  const rect = anchorEl.getBoundingClientRect();
+  showPopupMenu(rect.left, rect.top - 4, items);
+  const menu = document.getElementById('tab-context-menu');
+  if (menu) {
+    const mrect = menu.getBoundingClientRect();
+    menu.style.top = Math.max(0, rect.top - mrect.height - 4) + 'px';
+  }
+}
+
+function showTabContextMenu(e, tab) {
+  e.preventDefault();
+
   const dir = tab.filePath ? tab.filePath.replace(/\\/g, '/').split('/').slice(0, -1).join('/') : null;
-  const items = [
+  showPopupMenu(e.clientX, e.clientY, [
     ['Close', () => closeTab(tab.id)],
     ['Close All But This', () => closeTabsWhere(t => t.id !== tab.id)],
     ['Close All to the Left', () => closeTabsWhere((t, i) => i < tabs.findIndex(x => x.id === tab.id))],
@@ -616,49 +858,23 @@ function showTabContextMenu(e, tab) {
     ['Copy File Name', () => copyToClipboard(getFileName(tab.filePath)), !tab.filePath],
     ['Copy Directory Path', () => copyToClipboard(dir), !tab.filePath],
     ['Open Containing Folder', () => window.electronAPI.showItemInFolder({ filePath: tab.filePath }), !tab.filePath],
-  ];
+  ]);
+}
 
-  const menu = document.createElement('div');
-  menu.id = 'tab-context-menu';
-  for (const item of items) {
-    if (!item) {
-      const sep = document.createElement('div');
-      sep.className = 'ctx-sep';
-      menu.appendChild(sep);
-      continue;
-    }
-    const [label, action, disabled] = item;
-    const el = document.createElement('div');
-    el.className = 'ctx-item' + (disabled ? ' disabled' : '');
-    el.textContent = label;
-    if (!disabled) {
-      el.addEventListener('click', () => {
-        hideTabContextMenu();
-        action();
-      });
-    }
-    menu.appendChild(el);
-  }
+function showEncodingMenu(anchorEl) {
+  const current = statusTarget().encoding;
+  showStatusMenu(anchorEl, Object.keys(ENCODING_LABELS).map(enc => [
+    ENCODING_LABELS[enc], () => setEncoding(enc), false, enc === current,
+  ]));
+}
 
-  menu.style.left = e.clientX + 'px';
-  menu.style.top = e.clientY + 'px';
-  document.body.appendChild(menu);
-
-  const rect = menu.getBoundingClientRect();
-  if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width - 4) + 'px';
-  if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height - 4) + 'px';
-
-  const dismiss = (ev) => {
-    if (ev.type === 'keydown' && ev.key !== 'Escape') return;
-    if (ev.type === 'mousedown' && menu.contains(ev.target)) return;
-    hideTabContextMenu();
-    document.removeEventListener('mousedown', dismiss, true);
-    document.removeEventListener('keydown', dismiss, true);
-    window.removeEventListener('blur', dismiss);
-  };
-  document.addEventListener('mousedown', dismiss, true);
-  document.addEventListener('keydown', dismiss, true);
-  window.addEventListener('blur', dismiss);
+function showEolMenu(anchorEl) {
+  const current = statusTarget().eol;
+  showStatusMenu(anchorEl, [
+    ['Windows (CR LF)', () => setEol('\r\n'), false, current === '\r\n'],
+    ['Unix (LF)', () => setEol('\n'), false, current === '\n'],
+    ['Macintosh (CR)', () => setEol('\r'), false, current === '\r'],
+  ]);
 }
 
 function copyToClipboard(text) {
@@ -702,7 +918,7 @@ async function confirmAction(opts) {
   return window.electronAPI.confirmAction(opts);
 }
 
-async function reloadTab(tab) {
+async function reloadTab(tab, encoding) {
   if (!tab || !tab.filePath || !window.electronAPI) return;
   if (tab.modified) {
     const choice = await confirmAction({
@@ -714,7 +930,7 @@ async function reloadTab(tab) {
     });
     if (choice !== 0) return;
   }
-  const result = await window.electronAPI.readFile({ filePath: tab.filePath });
+  const result = await window.electronAPI.readFile({ filePath: tab.filePath, encoding });
   if (!result.success) {
     reportSaveError(tab.filePath, result.error);
     return;
@@ -723,6 +939,8 @@ async function reloadTab(tab) {
   const content = normalizeNewlines(result.content);
   tab.eol = detectEol(result.content);
   tab.savedEol = tab.eol;
+  tab.encoding = result.encoding || 'utf8';
+  tab.savedEncoding = tab.encoding;
   tab.content = content;
   tab.savedContent = content;
   tab.modified = false;
@@ -750,7 +968,7 @@ async function reloadTab(tab) {
   refreshEolMarkers();
 }
 
-async function reloadSplitFile() {
+async function reloadSplitFile(encoding) {
   if (!splitEditorView || !splitFilePath) return;
   if (splitModified) {
     const choice = await confirmAction({
@@ -762,7 +980,7 @@ async function reloadSplitFile() {
     });
     if (choice !== 0) return;
   }
-  const result = await window.electronAPI.readFile({ filePath: splitFilePath });
+  const result = await window.electronAPI.readFile({ filePath: splitFilePath, encoding });
   if (!result.success) {
     reportSaveError(splitFilePath, result.error);
     return;
@@ -770,6 +988,8 @@ async function reloadSplitFile() {
   const content = normalizeNewlines(result.content);
   splitEol = detectEol(result.content);
   splitSavedEol = splitEol;
+  splitEncoding = result.encoding || 'utf8';
+  splitSavedEncoding = splitEncoding;
   splitSavedContent = content;
   syncingSplit = true;
   try {
@@ -784,11 +1004,27 @@ async function reloadSplitFile() {
   refreshEolMarkers();
 }
 
-function reloadCurrent() {
+function reloadCurrent(encoding) {
   const target = rightPaneTarget();
-  if (target === 'file') return reloadSplitFile();
-  if (target === 'tab') return reloadTab(tabs.find(t => t.id === splitTabId));
-  return reloadTab(getActiveTab());
+  if (target === 'file') return reloadSplitFile(encoding);
+  if (target === 'tab') return reloadTab(tabs.find(t => t.id === splitTabId), encoding);
+  return reloadTab(getActiveTab(), encoding);
+}
+
+function setEncoding(enc) {
+  if (!ENCODING_LABELS[enc]) return;
+  const target = rightPaneTarget();
+  if (target === 'file') {
+    splitEncoding = enc;
+    splitModified = computeSplitModified();
+    if (splitModified) scheduleSplitAutoSave();
+    updateStatusBar();
+    return;
+  }
+  const tab = target === 'tab' ? tabs.find(t => t.id === splitTabId) : getActiveTab();
+  if (!tab) return;
+  tab.encoding = enc;
+  refreshTabModified(tab);
 }
 
 function currentFilePath() {
@@ -829,7 +1065,7 @@ async function showSummary() {
   lines.push(`Words: ${words.toLocaleString()}`);
   lines.push(`Bytes (as saved): ${bytes.toLocaleString()}`);
   lines.push(`Line endings: ${eolLabel(target.eol)}`);
-  lines.push('Encoding: UTF-8');
+  lines.push(`Encoding: ${encodingLabel(target.encoding)}`);
   await window.electronAPI.showInfo({
     title: 'File Summary',
     message: getFileName(target.filePath),
@@ -876,16 +1112,16 @@ function statusTarget() {
   const tab = getActiveTab();
   const rightFocused = focusedPane === 'right' && splitEditorView;
   if (rightFocused && splitMode === 'file') {
-    return { filePath: splitFilePath, modified: splitModified, eol: splitEol, view: splitEditorView };
+    return { filePath: splitFilePath, modified: splitModified, eol: splitEol, encoding: splitEncoding, view: splitEditorView };
   }
   if (rightFocused && splitMode === 'tab') {
     const st = tabs.find(t => t.id === splitTabId) || tab;
-    return { filePath: st.filePath, modified: st.modified, eol: st.eol, view: splitEditorView };
+    return { filePath: st.filePath, modified: st.modified, eol: st.eol, encoding: st.encoding, view: splitEditorView };
   }
   if (rightFocused && splitMode === 'compare') {
-    return { filePath: compareRightPath, modified: false, eol: tab.eol, view: splitEditorView };
+    return { filePath: compareRightPath, modified: false, eol: tab.eol, encoding: 'utf8', view: splitEditorView };
   }
-  return { filePath: tab.filePath, modified: tab.modified, eol: tab.eol, view: editorView };
+  return { filePath: tab.filePath, modified: tab.modified, eol: tab.eol, encoding: tab.encoding, view: editorView };
 }
 
 function updateStatusBar() {
@@ -898,9 +1134,8 @@ function updateStatusBar() {
 
   const lang = getLanguageForFile(target.filePath);
   document.getElementById('status-lang').textContent = lang.name;
-  document.getElementById('status-encoding').textContent = 'UTF-8';
-  document.getElementById('status-eol').textContent =
-    target.eol === '\r\n' ? 'CRLF' : target.eol === '\r' ? 'CR' : 'LF';
+  document.getElementById('status-encoding').textContent = encodingLabel(target.encoding);
+  document.getElementById('status-eol').textContent = eolLabel(target.eol);
 
   const view = target.view;
   if (view) {
@@ -925,7 +1160,9 @@ function updateStatusBar() {
 }
 
 function refreshTabModified(tab) {
-  tab.modified = tab.content !== tab.savedContent || tab.eol !== tab.savedEol;
+  tab.modified = tab.content !== tab.savedContent
+    || tab.eol !== tab.savedEol
+    || tab.encoding !== tab.savedEncoding;
   renderTabs();
   updateStatusBar();
   if (tab.modified && tab.filePath) {
@@ -948,6 +1185,7 @@ function markTabSaved(tab, content) {
   tab.content = content;
   tab.savedContent = content;
   tab.savedEol = tab.eol;
+  tab.savedEncoding = tab.encoding;
   tab.modified = false;
   renderTabs();
   updateStatusBar();
@@ -984,6 +1222,7 @@ async function saveTab(tab, opts = {}) {
   const result = await window.electronAPI.saveFile({
     filePath: tab.filePath,
     content: content.replace(/\n/g, tab.eol),
+    encoding: tab.encoding,
   });
   if (!result.success) {
     if (!opts.silent) reportSaveError(tab.filePath, result.error);
@@ -1000,6 +1239,7 @@ async function saveTabAs(tab) {
   const result = await window.electronAPI.saveAs({
     content: content.replace(/\n/g, tab.eol),
     defaultPath: tab.filePath || 'untitled.txt',
+    encoding: tab.encoding,
   });
   if (!result.success) {
     if (!result.canceled) reportSaveError(result.filePath || 'file', result.error);
@@ -1061,6 +1301,7 @@ function doRedo() {
 
 function mainExtensions() {
   return [
+    ...bookmarkExtensions(),
     lineNumbers(),
     highlightActiveLineGutter(),
     highlightSpecialChars(),
@@ -1160,7 +1401,7 @@ async function resolveWikiLink(linkText) {
       if (existing) {
         switchToTab(existing.id);
       } else {
-        createTab(fullPath, result.content);
+        createTab(fullPath, result.content, { encoding: result.encoding });
       }
       return;
     }
@@ -1699,9 +1940,12 @@ function adoptSplitFileAsTab() {
   const modified = splitModified;
   const filePath = splitFilePath;
   const savedEol = splitSavedEol;
-  const tab = createTab(filePath, content);
+  const encoding = splitEncoding;
+  const savedEncoding = splitSavedEncoding;
+  const tab = createTab(filePath, content, { encoding });
   tab.eol = eol;
   tab.savedEol = savedEol;
+  tab.savedEncoding = savedEncoding;
   tab.savedContent = savedContent;
   tab.modified = modified;
   renderTabs();
@@ -1731,7 +1975,7 @@ async function openFileFromPath(filePath) {
     const result = await window.electronAPI.readFile({ filePath });
     if (result.success) {
       await window.electronAPI.trackRecentFile({ filePath });
-      createTab(filePath, result.content);
+      createTab(filePath, result.content, { encoding: result.encoding });
     }
   }
 }
@@ -2171,11 +2415,15 @@ let splitEditorView = null;
 let splitFilePath = null;
 let splitEol = DEFAULT_EOL;
 let splitSavedEol = DEFAULT_EOL;
+let splitEncoding = 'utf8';
+let splitSavedEncoding = 'utf8';
 let splitSavedContent = '';
 
 function computeSplitModified() {
   if (!splitEditorView) return false;
-  return splitEditorView.state.doc.toString() !== splitSavedContent || splitEol !== splitSavedEol;
+  return splitEditorView.state.doc.toString() !== splitSavedContent
+    || splitEol !== splitSavedEol
+    || splitEncoding !== splitSavedEncoding;
 }
 let splitModified = false;
 let splitAutoSaveTimer = null;
@@ -2253,6 +2501,7 @@ async function saveSplitFile(opts = {}) {
   const result = await window.electronAPI.saveFile({
     filePath: splitFilePath,
     content: content.replace(/\n/g, splitEol),
+    encoding: splitEncoding,
   });
   if (!result.success) {
     if (!opts.silent) reportSaveError(splitFilePath, result.error);
@@ -2260,6 +2509,7 @@ async function saveSplitFile(opts = {}) {
   }
   splitSavedContent = content;
   splitSavedEol = splitEol;
+  splitSavedEncoding = splitEncoding;
   splitModified = false;
   updateStatusBar();
   return true;
@@ -2271,6 +2521,7 @@ async function saveSplitFileAs() {
   const result = await window.electronAPI.saveAs({
     content: content.replace(/\n/g, splitEol),
     defaultPath: splitFilePath || 'untitled.txt',
+    encoding: splitEncoding,
   });
   if (!result.success) {
     if (!result.canceled) reportSaveError(result.filePath || 'file', result.error);
@@ -2279,6 +2530,7 @@ async function saveSplitFileAs() {
   splitFilePath = result.filePath;
   splitSavedContent = content;
   splitSavedEol = splitEol;
+  splitSavedEncoding = splitEncoding;
   splitModified = false;
   splitEditorView.dispatch({
     effects: splitLanguageCompartment.reconfigure(getLanguageExtension(splitFilePath)),
@@ -2316,6 +2568,7 @@ function createSplitEditor(content, langExt, mode) {
   splitMode = mode;
 
   const extensions = [
+    ...bookmarkExtensions(),
     lineNumbers(),
     highlightActiveLineGutter(),
     highlightSpecialChars(),
@@ -2382,7 +2635,7 @@ function createSplitEditor(content, langExt, mode) {
     extensions.push(
       EditorView.updateListener.of((update) => {
         if (!update.docChanged) return;
-        splitModified = update.state.doc.toString() !== splitSavedContent || splitEol !== splitSavedEol;
+        splitModified = computeSplitModified();
         if (splitModified) scheduleSplitAutoSave();
       })
     );
@@ -2490,6 +2743,8 @@ async function loadFileIntoSplitPane(filePath) {
   splitFilePath = filePath;
   splitEol = detectEol(result.content);
   splitSavedEol = splitEol;
+  splitEncoding = result.encoding || 'utf8';
+  splitSavedEncoding = splitEncoding;
   splitSavedContent = content;
   splitModified = false;
   splitEditorView.focus();
@@ -2793,8 +3048,12 @@ const commands = {
   'toggle-line-comment': () => { const v = editableView(); if (v) toggleComment(v); },
   'toggle-block-comment': () => { const v = editableView(); if (v) toggleBlockComment(v); },
   'set-eol': (eol) => setEol(eol),
+  'set-encoding': (enc) => setEncoding(enc),
+  'reopen-encoding': (enc) => reloadCurrent(enc),
   'find': () => openFind(),
   'replace': () => openFind(),
+  'find-in-files': () => showFindInFiles(),
+  'bookmark': (action) => bookmarkCommand(action),
   'goto-line': () => showGotoLineDialog(),
   'toggle-sidebar': () => toggleSidebar(),
   'toggle-minimap': () => toggleMinimap(),
@@ -2815,6 +3074,130 @@ const commands = {
 function runCommand(name, arg) {
   const fn = commands[name];
   if (fn) fn(arg);
+}
+
+// Find in Files
+function showFindInFiles() {
+  const dialog = document.getElementById('find-files-dialog');
+  const query = document.getElementById('fif-query');
+  const dirInput = document.getElementById('fif-dir');
+  const view = activeView();
+  const sel = view ? view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to) : '';
+  if (sel && !sel.includes('\n')) query.value = sel;
+  if (!dirInput.value) dirInput.value = defaultSearchDir();
+  dialog.classList.remove('hidden');
+  query.focus();
+  query.select();
+}
+
+function hideFindInFiles() {
+  document.getElementById('find-files-dialog').classList.add('hidden');
+}
+
+function defaultSearchDir() {
+  if (currentFolderPath) return currentFolderPath;
+  const p = currentFilePath();
+  if (p) return p.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+  return '';
+}
+
+async function runFindInFiles() {
+  if (!window.electronAPI || !window.electronAPI.findInFiles) return;
+  const opts = {
+    query: document.getElementById('fif-query').value,
+    filters: document.getElementById('fif-filters').value,
+    dir: document.getElementById('fif-dir').value.trim(),
+    matchCase: document.getElementById('fif-case').checked,
+    wholeWord: document.getElementById('fif-word').checked,
+    regex: document.getElementById('fif-regex').checked,
+    subfolders: document.getElementById('fif-sub').checked,
+  };
+  if (!opts.query || !opts.dir) return;
+  hideFindInFiles();
+
+  const panel = document.getElementById('search-results');
+  const title = document.getElementById('search-results-title');
+  const list = document.getElementById('search-results-list');
+  panel.classList.remove('hidden');
+  title.textContent = `Searching for "${opts.query}"...`;
+  list.innerHTML = '';
+
+  const result = await window.electronAPI.findInFiles(opts);
+  if (!result.success) {
+    title.textContent = 'Search failed';
+    list.innerHTML = `<div class="sr-empty">${escapeHtml(result.error || 'Unknown error')}</div>`;
+    return;
+  }
+  renderSearchResults(opts.query, result);
+}
+
+function renderSearchResults(query, result) {
+  const title = document.getElementById('search-results-title');
+  const list = document.getElementById('search-results-list');
+  const fileCount = result.results.length;
+  title.textContent = `"${query}": ${result.total} hit${result.total === 1 ? '' : 's'} in ${fileCount} file${fileCount === 1 ? '' : 's'} (${result.filesSearched} searched)${result.truncated ? ', list truncated' : ''}`;
+  list.innerHTML = '';
+  if (!fileCount) {
+    list.innerHTML = '<div class="sr-empty">No matches found.</div>';
+    return;
+  }
+  for (const file of result.results) {
+    const header = document.createElement('div');
+    header.className = 'sr-file';
+    header.innerHTML = `<span class="sr-toggle">&#9660;</span><span class="sr-path">${escapeHtml(file.filePath)}</span><span class="sr-count">${file.matches.length}</span>`;
+    const body = document.createElement('div');
+    body.className = 'sr-matches';
+    header.addEventListener('click', () => {
+      const collapsed = body.classList.toggle('collapsed');
+      header.querySelector('.sr-toggle').innerHTML = collapsed ? '&#9654;' : '&#9660;';
+    });
+    for (const m of file.matches) {
+      const row = document.createElement('div');
+      row.className = 'sr-match';
+      row.innerHTML = `<span class="sr-line">Line ${m.line}:</span><span class="sr-text">${escapeHtml(m.text.trim())}</span>`;
+      row.addEventListener('click', () => openFileAtLine(file.filePath, m.line, m.col));
+      body.appendChild(row);
+    }
+    list.appendChild(header);
+    list.appendChild(body);
+  }
+}
+
+async function openFileAtLine(filePath, lineNumber, col) {
+  await openFileFromPath(filePath);
+  let view = editorView;
+  if (splitEditorView && ((splitMode === 'file' && splitFilePath === filePath)
+      || (splitMode === 'tab' && tabs.find(t => t.id === splitTabId && t.filePath === filePath)))) {
+    if (focusedPane === 'right') view = splitEditorView;
+  }
+  const doc = view.state.doc;
+  const line = doc.line(Math.min(Math.max(1, lineNumber), doc.lines));
+  const pos = Math.min(line.from + Math.max(0, (col || 1) - 1), line.to);
+  view.dispatch({
+    selection: { anchor: pos },
+    effects: EditorView.scrollIntoView(pos, { y: 'center' }),
+  });
+  view.focus();
+}
+
+function initFindInFiles() {
+  document.getElementById('fif-ok').addEventListener('click', runFindInFiles);
+  document.getElementById('fif-cancel').addEventListener('click', hideFindInFiles);
+  document.getElementById('fif-use-current').addEventListener('click', () => {
+    document.getElementById('fif-dir').value = defaultSearchDir();
+  });
+  document.getElementById('find-files-dialog').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type === 'text') runFindInFiles();
+    if (e.key === 'Escape') hideFindInFiles();
+  });
+  document.getElementById('find-files-dialog').addEventListener('click', (e) => {
+    if (e.target.classList.contains('dialog-overlay')) hideFindInFiles();
+  });
+  document.getElementById('search-results-close').addEventListener('click', () => {
+    document.getElementById('search-results').classList.add('hidden');
+  });
+  document.getElementById('status-encoding').addEventListener('click', (e) => showEncodingMenu(e.currentTarget));
+  document.getElementById('status-eol').addEventListener('click', (e) => showEolMenu(e.currentTarget));
 }
 
 function initTabShortcuts() {
@@ -2900,7 +3283,7 @@ function wireEvents() {
   });
 
   if (window.electronAPI) {
-    window.electronAPI.onFileOpened(({ filePath, content }) => {
+    window.electronAPI.onFileOpened(({ filePath, content, encoding }) => {
       if (pendingCompare) {
         pendingCompare = false;
         startCompare(filePath, content);
@@ -2919,7 +3302,7 @@ function wireEvents() {
         switchToTab(existing.id);
         return;
       }
-      createTab(filePath, content);
+      createTab(filePath, content, { encoding });
     });
 
     window.electronAPI.onFolderOpened(({ folderPath }) => {
@@ -2976,6 +3359,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initGotoLineDialog();
   initProseFind();
   initTabShortcuts();
+  initFindInFiles();
   initMinimap();
   loadRecentFiles();
 });

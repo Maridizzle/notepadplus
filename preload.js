@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showItemInFolder: (data) => ipcRenderer.invoke('shell-show-item', data),
   openPath: (data) => ipcRenderer.invoke('shell-open-path', data),
   fileStat: (data) => ipcRenderer.invoke('file-stat', data),
+  findInFiles: (data) => ipcRenderer.invoke('find-in-files', data),
   onRequestClose: (callback) => ipcRenderer.on('request-close', () => callback()),
   openFile: () => ipcRenderer.invoke('dialog-open'),
   openFolder: () => ipcRenderer.invoke('dialog-open-folder'),
