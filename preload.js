@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onMenuNew: (callback) => ipcRenderer.on('menu-new', () => callback()),
   onMenuSave: (callback) => ipcRenderer.on('menu-save', () => callback()),
   onMenuSaveAs: (callback) => ipcRenderer.on('menu-save-as', () => callback()),
+  onMenuUndo: (callback) => ipcRenderer.on('menu-undo', () => callback()),
+  onMenuRedo: (callback) => ipcRenderer.on('menu-redo', () => callback()),
   onMenuFind: (callback) => ipcRenderer.on('menu-find', () => callback()),
   onMenuReplace: (callback) => ipcRenderer.on('menu-replace', () => callback()),
   onMenuGotoLine: (callback) => ipcRenderer.on('menu-goto-line', () => callback()),

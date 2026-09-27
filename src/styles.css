@@ -1026,6 +1026,202 @@ body.light-theme .dialog-buttons button:last-child {
   display: none;
 }
 
+/* Grammar panel */
+#grammar-panel {
+  width: 300px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 2px solid var(--char-black);
+  background: var(--bg-secondary);
+  overflow: hidden;
+}
+
+#grammar-panel.hidden {
+  display: none;
+}
+
+#grammar-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--oxidized-brass);
+  border-bottom: 2px solid var(--char-black);
+  background: rgba(0, 0, 0, 0.1);
+}
+
+#grammar-status {
+  flex: 1;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#grammar-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+#grammar-close:hover {
+  color: var(--text-active);
+}
+
+#grammar-results {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.grammar-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(13, 15, 13, 0.6);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.grammar-item:hover {
+  background: var(--bg-hover);
+}
+
+.grammar-item-type {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+
+.grammar-item-type.typo {
+  background: rgba(220, 60, 60, 0.25);
+  color: #e88;
+}
+
+.grammar-item-type.style {
+  background: rgba(200, 150, 46, 0.25);
+  color: #d4a838;
+}
+
+.grammar-item-type.error {
+  background: rgba(80, 140, 220, 0.25);
+  color: #8bf;
+}
+
+.grammar-item-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.grammar-item-message {
+  color: var(--text-primary);
+  margin-bottom: 3px;
+}
+
+.grammar-item-context {
+  color: var(--text-secondary);
+  font-size: 11px;
+  word-break: break-word;
+}
+
+.grammar-item-context mark {
+  background: rgba(200, 150, 46, 0.3);
+  color: var(--text-active);
+}
+
+.grammar-item-fix {
+  flex-shrink: 0;
+  background: var(--verdigris-deep);
+  border: 1px solid var(--char-black);
+  color: var(--text-primary);
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 10px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.grammar-item-fix:hover {
+  background: var(--verdigris);
+}
+
+.cm-grammar-typo {
+  text-decoration: underline wavy #dc4040;
+}
+
+.cm-grammar-style {
+  text-decoration: underline wavy #c8962e;
+}
+
+.cm-grammar-error {
+  text-decoration: underline wavy #5090d8;
+}
+
+/* Prose find bar */
+#prose-find-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  background: var(--verdigris-deep);
+  border-top: 1px solid var(--char-black);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+#prose-find-bar.hidden {
+  display: none;
+}
+
+#prose-find-bar input {
+  flex: 0 1 260px;
+  padding: 3px 8px;
+  background: var(--bg-primary);
+  color: var(--text-active);
+  border: 1px solid var(--char-black);
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+#prose-find-bar input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+#prose-find-count {
+  color: var(--text-secondary);
+  min-width: 70px;
+}
+
+#prose-find-bar button {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--char-black);
+  color: var(--text-primary);
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+}
+
+#prose-find-bar button:hover {
+  background: var(--accent);
+  color: var(--char-black);
+}
+
 #prose-editor {
   width: 100%;
   height: 100%;

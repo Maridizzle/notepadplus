@@ -1,6 +1,6 @@
 import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine, Decoration, ViewPlugin, WidgetType } from '@codemirror/view';
-import { EditorState, Compartment, RangeSetBuilder } from '@codemirror/state';
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
+import { EditorState, Compartment, RangeSetBuilder, StateEffect } from '@codemirror/state';
+import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from '@codemirror/commands';
 import { searchKeymap, highlightSelectionMatches, openSearchPanel, closeSearchPanel } from '@codemirror/search';
 import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { foldGutter, indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldKeymap, foldAll, unfoldAll } from '@codemirror/language';
@@ -61,8 +61,16 @@ let tabCounter = 0;
 let editorView = null;
 let fontSize = 14;
 let currentFolderPath = null;
-let autoSaveTimer = null;
 const AUTO_SAVE_DELAY = 2000;
+const refreshDecorations = StateEffect.define();
+
+function hasRefreshEffect(update) {
+  return update.transactions.some(tr => tr.effects.some(e => e.is(refreshDecorations)));
+}
+
+function activeView() {
+  return focusedPane === 'right' && splitEditorView ? splitEditorView : editorView;
+}
 let wordWrap = false;
 let currentFontFamily = null;
 let leftBgColor = null;
@@ -340,7 +348,9 @@ async function closeTab(id) {
   const idx = tabs.findIndex(t => t.id === id);
   if (idx < 0) return;
 
+  if (tab.autoSaveTimer) clearTimeout(tab.autoSaveTimer);
   tabs.splice(idx, 1);
+  if (splitMode === 'tab' && splitTabId === id) hideSplitLayout();
 
   if (tabs.length === 0) {
     createTab(null, '');
@@ -383,7 +393,13 @@ function renderTabs() {
     el.appendChild(modified);
     el.appendChild(close);
 
-    el.addEventListener('click', () => switchToTab(tab.id));
+    el.addEventListener('click', () => {
+      if (focusedPane === 'right' && splitView && splitMode !== 'compare') {
+        loadTabIntoSplitPane(tab);
+      } else {
+        switchToTab(tab.id);
+      }
+    });
     container.appendChild(el);
   }
 }
@@ -396,29 +412,47 @@ function updateWindowTitle() {
   window.electronAPI.setTitle({ title: `${fileName}${modified} - NotepadPlus` });
 }
 
+function statusTarget() {
+  const tab = getActiveTab();
+  const rightFocused = focusedPane === 'right' && splitEditorView;
+  if (rightFocused && splitMode === 'file') {
+    return { filePath: splitFilePath, modified: splitModified, eol: splitEol, view: splitEditorView };
+  }
+  if (rightFocused && splitMode === 'tab') {
+    const st = tabs.find(t => t.id === splitTabId) || tab;
+    return { filePath: st.filePath, modified: st.modified, eol: st.eol, view: splitEditorView };
+  }
+  if (rightFocused && splitMode === 'compare') {
+    return { filePath: compareRightPath, modified: false, eol: tab.eol, view: splitEditorView };
+  }
+  return { filePath: tab.filePath, modified: tab.modified, eol: tab.eol, view: editorView };
+}
+
 function updateStatusBar() {
   const tab = getActiveTab();
   if (!tab) return;
+  const target = statusTarget();
 
-  document.getElementById('status-file').textContent = tab.filePath || 'Untitled';
-  document.getElementById('status-modified').textContent = tab.modified ? '(Modified)' : '';
+  document.getElementById('status-file').textContent = target.filePath || 'Untitled';
+  document.getElementById('status-modified').textContent = target.modified ? '(Modified)' : '';
 
-  const lang = getLanguageForFile(tab.filePath);
+  const lang = getLanguageForFile(target.filePath);
   document.getElementById('status-lang').textContent = lang.name;
   document.getElementById('status-encoding').textContent = 'UTF-8';
   document.getElementById('status-eol').textContent =
-    tab.eol === '\r\n' ? 'CRLF' : tab.eol === '\r' ? 'CR' : 'LF';
+    target.eol === '\r\n' ? 'CRLF' : target.eol === '\r' ? 'CR' : 'LF';
 
-  if (editorView) {
-    const pos = editorView.state.selection.main.head;
-    const line = editorView.state.doc.lineAt(pos);
+  const view = target.view;
+  if (view) {
+    const pos = view.state.selection.main.head;
+    const line = view.state.doc.lineAt(pos);
     const col = pos - line.from + 1;
     document.getElementById('status-position').textContent = `Ln ${line.number}, Col ${col}`;
 
-    const doc = editorView.state.doc;
+    const doc = view.state.doc;
     document.getElementById('status-lines').textContent = `${doc.lines} lines`;
 
-    const { from, to } = editorView.state.selection.main;
+    const { from, to } = view.state.selection.main;
     if (from !== to) {
       const selLen = to - from;
       document.getElementById('status-selection').textContent = `(${selLen} selected)`;
@@ -483,23 +517,52 @@ async function saveTabAs(tab) {
   return true;
 }
 
-function rightPaneHasFile() {
-  return focusedPane === 'right' && splitEditorView && splitFilePath && !compareMode;
+function rightPaneTarget() {
+  if (focusedPane !== 'right' || !splitEditorView) return null;
+  return splitMode === 'file' || splitMode === 'tab' ? splitMode : null;
 }
 
 async function saveCurrentFile() {
-  if (rightPaneHasFile()) return saveSplitFile();
+  const target = rightPaneTarget();
+  if (target === 'file') return saveSplitFile();
+  if (target === 'tab') return saveTab(tabs.find(t => t.id === splitTabId));
   return saveTab(getActiveTab());
 }
 
 async function saveCurrentFileAs() {
-  if (rightPaneHasFile()) return saveSplitFileAs();
+  const target = rightPaneTarget();
+  if (target === 'file') return saveSplitFileAs();
+  if (target === 'tab') return saveTabAs(tabs.find(t => t.id === splitTabId));
   return saveTabAs(getActiveTab());
+}
+
+function applyFontSize() {
+  const px = fontSize + 'px';
+  document.querySelectorAll('.cm-editor').forEach(el => { el.style.fontSize = px; });
+  document.getElementById('prose-editor').style.fontSize = px;
+  if (editorView) editorView.requestMeasure();
+  if (splitEditorView) splitEditorView.requestMeasure();
 }
 
 function setFontSize(size) {
   fontSize = Math.max(8, Math.min(40, size));
-  document.querySelector('.cm-editor').style.fontSize = fontSize + 'px';
+  applyFontSize();
+}
+
+function doUndo() {
+  if (proseMode && focusedPane === 'prose') {
+    document.execCommand('undo');
+  } else {
+    undo(activeView());
+  }
+}
+
+function doRedo() {
+  if (proseMode && focusedPane === 'prose') {
+    document.execCommand('redo');
+  } else {
+    redo(activeView());
+  }
 }
 
 function mainExtensions() {
@@ -654,11 +717,12 @@ async function searchSubdirForFile(dirPath, linkText) {
   return null;
 }
 
-function scheduleAutoSave() {
-  if (autoSaveTimer) clearTimeout(autoSaveTimer);
-  autoSaveTimer = setTimeout(async () => {
-    const tab = getActiveTab();
-    if (!tab || !tab.filePath || !tab.modified) return;
+function scheduleAutoSave(tab = getActiveTab()) {
+  if (!tab) return;
+  if (tab.autoSaveTimer) clearTimeout(tab.autoSaveTimer);
+  tab.autoSaveTimer = setTimeout(async () => {
+    tab.autoSaveTimer = null;
+    if (!tab.filePath || !tab.modified) return;
     if (await saveTab(tab)) flashAutoSaveIndicator();
   }, AUTO_SAVE_DELAY);
 }
@@ -699,7 +763,7 @@ const comparePluginLeft = ViewPlugin.fromClass(class {
     this.decorations = buildCompareDecorations(view, leftCompareRanges);
   }
   update(update) {
-    if (update.docChanged || update.viewportChanged) {
+    if (update.docChanged || update.viewportChanged || hasRefreshEffect(update)) {
       this.decorations = buildCompareDecorations(update.view, leftCompareRanges);
     }
   }
@@ -746,26 +810,41 @@ const grammarPlugin = ViewPlugin.fromClass(class {
     this.decorations = buildGrammarDecorations(view);
   }
   update(update) {
-    if (update.docChanged || update.viewportChanged) {
+    if (update.docChanged || update.viewportChanged || hasRefreshEffect(update)) {
       this.decorations = buildGrammarDecorations(update.view);
     }
   }
 }, { decorations: v => v.decorations });
 
+function refreshGrammarDecorations() {
+  if (!proseMode && editorView) {
+    editorView.dispatch({ effects: refreshDecorations.of(null) });
+  }
+}
+
+function closeGrammarPanel() {
+  grammarMatches = [];
+  document.getElementById('grammar-panel').classList.add('hidden');
+  document.getElementById('btn-grammar').classList.remove('active');
+  refreshGrammarDecorations();
+}
+
 async function runGrammarCheck() {
   if (!window.electronAPI || !window.electronAPI.checkGrammar) return;
 
-  const text = proseMode
-    ? document.getElementById('prose-editor').value
-    : editorView.state.doc.toString();
+  const text = getCurrentContent();
+  const statusEl = document.getElementById('grammar-status');
+  document.getElementById('grammar-panel').classList.remove('hidden');
+  document.getElementById('btn-grammar').classList.add('active');
 
   if (!text.trim()) {
     grammarMatches = [];
+    statusEl.textContent = 'Nothing to check';
     showGrammarResults([]);
+    refreshGrammarDecorations();
     return;
   }
 
-  const statusEl = document.getElementById('grammar-status');
   statusEl.textContent = 'Checking...';
 
   const response = await window.electronAPI.checkGrammar({ text });
@@ -780,15 +859,8 @@ async function runGrammarCheck() {
     ? 'No issues found'
     : `${grammarMatches.length} issue${grammarMatches.length > 1 ? 's' : ''}`;
 
-  if (!proseMode && editorView) {
-    editorView.dispatch({ effects: [] });
-  }
-
+  refreshGrammarDecorations();
   showGrammarResults(grammarMatches);
-
-  const panel = document.getElementById('grammar-panel');
-  panel.classList.remove('hidden');
-  document.getElementById('btn-grammar').classList.add('active');
 }
 
 function showGrammarResults(matches) {
@@ -819,7 +891,7 @@ function showGrammarResults(matches) {
     item.innerHTML = `
       <span class="grammar-item-type ${typeLabel}">${typeLabel.toUpperCase()}</span>
       <div class="grammar-item-body">
-        <div class="grammar-item-message">${match.message}</div>
+        <div class="grammar-item-message">${escapeHtml(match.message || '')}</div>
         <div class="grammar-item-context">${escapeHtml(before)}<mark>${escapeHtml(marked)}</mark>${escapeHtml(after)}</div>
       </div>
       ${topFix ? `<button class="grammar-item-fix" data-index="${index}">Fix: ${escapeHtml(topFix)}</button>` : ''}
@@ -884,9 +956,7 @@ function applyGrammarFix(match, index) {
     }
   }
 
-  if (!proseMode && editorView) {
-    editorView.dispatch({ effects: [] });
-  }
+  refreshGrammarDecorations();
 
   showGrammarResults(grammarMatches);
   document.getElementById('grammar-status').textContent =
@@ -946,12 +1016,38 @@ function proseFindAll(query) {
 function proseFindGoTo(index) {
   if (proseFindMatches.length === 0) return;
   const textarea = document.getElementById('prose-editor');
-  const query = document.getElementById('prose-find-input').value;
+  const input = document.getElementById('prose-find-input');
   const pos = proseFindMatches[index];
   textarea.focus();
-  textarea.setSelectionRange(pos, pos + query.length);
+  textarea.setSelectionRange(pos, pos + input.value.length);
+  input.focus();
   document.getElementById('prose-find-count').textContent =
     `${index + 1} / ${proseFindMatches.length}`;
+}
+
+function initProseFind() {
+  const input = document.getElementById('prose-find-input');
+  input.addEventListener('input', () => proseFindAll(input.value));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (e.shiftKey) proseFindPrev(); else proseFindNext();
+    } else if (e.key === 'Escape') {
+      closeProseFind();
+      document.getElementById('prose-editor').focus();
+    }
+  });
+  document.getElementById('prose-find-next').addEventListener('click', proseFindNext);
+  document.getElementById('prose-find-prev').addEventListener('click', proseFindPrev);
+  document.getElementById('prose-find-close').addEventListener('click', closeProseFind);
+}
+
+function openFind() {
+  if (proseMode && focusedPane !== 'right') {
+    openProseFind();
+  } else {
+    openSearchPanel(activeView());
+  }
 }
 
 function proseFindNext() {
@@ -1026,9 +1122,36 @@ function setEditorBackground(color) {
   document.getElementById('bg-color').value = color;
 }
 
+async function openFileInRightPane(filePath) {
+  const existing = tabs.find(t => t.filePath === filePath);
+  if (existing) return loadTabIntoSplitPane(existing);
+  return loadFileIntoSplitPane(filePath);
+}
+
+function adoptSplitFileAsTab() {
+  const content = splitEditorView.state.doc.toString();
+  const eol = splitEol;
+  const savedContent = splitSavedContent;
+  const modified = splitModified;
+  const filePath = splitFilePath;
+  const tab = createTab(filePath, content);
+  tab.eol = eol;
+  tab.savedContent = savedContent;
+  tab.modified = modified;
+  renderTabs();
+  updateStatusBar();
+  loadTabIntoSplitPane(tab);
+  editorView.focus();
+  return tab;
+}
+
 async function openFileFromPath(filePath) {
-  if (focusedPane === 'right' && splitView) {
-    loadFileIntoSplitPane(filePath);
+  if (focusedPane === 'right' && splitView && splitMode !== 'compare') {
+    return openFileInRightPane(filePath);
+  }
+
+  if (splitMode === 'file' && splitFilePath === filePath) {
+    adoptSplitFileAsTab();
     return;
   }
 
@@ -1180,36 +1303,40 @@ function initSidebarResize() {
   });
 }
 
+let gotoView = null;
+
 function showGotoLineDialog() {
   const dialog = document.getElementById('goto-dialog');
   const input = document.getElementById('goto-input');
+  gotoView = activeView();
   dialog.classList.remove('hidden');
   input.value = '';
   input.focus();
 
-  const maxLine = editorView.state.doc.lines;
+  const maxLine = gotoView.state.doc.lines;
   input.max = maxLine;
   input.placeholder = `1 - ${maxLine}`;
 }
 
 function hideGotoLineDialog() {
   document.getElementById('goto-dialog').classList.add('hidden');
-  editorView.focus();
+  (gotoView || editorView).focus();
 }
 
 function executeGotoLine() {
   const input = document.getElementById('goto-input');
   const lineNum = parseInt(input.value, 10);
+  const view = gotoView || editorView;
   if (isNaN(lineNum) || lineNum < 1) {
     hideGotoLineDialog();
     return;
   }
 
-  const doc = editorView.state.doc;
+  const doc = view.state.doc;
   const targetLine = Math.min(lineNum, doc.lines);
   const line = doc.line(targetLine);
 
-  editorView.dispatch({
+  view.dispatch({
     selection: { anchor: line.from },
     effects: EditorView.scrollIntoView(line.from, { y: 'center' }),
   });
@@ -1328,9 +1455,16 @@ function initMinimap() {
 }
 
 // Text transformations
+function editableView() {
+  const view = activeView();
+  if (!view || (view === splitEditorView && splitMode === 'compare')) return null;
+  return view;
+}
+
 function transformText(type) {
-  if (!editorView) return;
-  const state = editorView.state;
+  const view = editableView();
+  if (!view) return;
+  const state = view.state;
   const { from, to } = state.selection.main;
   if (from === to) return;
 
@@ -1354,13 +1488,14 @@ function transformText(type) {
     default:
       return;
   }
-  editorView.dispatch({ changes: { from, to, insert: result } });
+  view.dispatch({ changes: { from, to, insert: result } });
 }
 
 // Line operations
 function lineOperation(type) {
-  if (!editorView) return;
-  const state = editorView.state;
+  const view = editableView();
+  if (!view) return;
+  const state = view.state;
   const doc = state.doc;
   const { from, to } = state.selection.main;
 
@@ -1404,7 +1539,7 @@ function lineOperation(type) {
 
   const rangeFrom = doc.line(startLine).from;
   const rangeTo = doc.line(endLine).to;
-  editorView.dispatch({ changes: { from: rangeFrom, to: rangeTo, insert: result.join('\n') } });
+  view.dispatch({ changes: { from: rangeFrom, to: rangeTo, insert: result.join('\n') } });
 }
 
 // Split view
@@ -1416,10 +1551,17 @@ let splitSavedContent = '';
 let splitModified = false;
 let splitAutoSaveTimer = null;
 let syncingSplit = false;
+let splitMode = null;
+let splitTabId = null;
 let compareMode = false;
+let compareRightPath = null;
+
+function splitMirrorsActiveTab() {
+  return splitMode === 'clone' || (splitMode === 'tab' && splitTabId === activeTabId);
+}
 
 function mirrorChanges(target, update) {
-  if (syncingSplit || !target || compareMode || splitFilePath) return;
+  if (syncingSplit || !target || !splitMirrorsActiveTab()) return;
   syncingSplit = true;
   try {
     target.dispatch({ changes: update.changes });
@@ -1432,8 +1574,25 @@ function mirrorChanges(target, update) {
   }
 }
 
+function applyChangesToTab(tab, update) {
+  syncingSplit = true;
+  try {
+    tab.state = tab.state.update({ changes: update.changes }).state;
+  } catch (e) {
+    tab.state = tab.state.update({
+      changes: { from: 0, to: tab.state.doc.length, insert: update.state.doc.toString() },
+    }).state;
+  } finally {
+    syncingSplit = false;
+  }
+  tab.content = tab.state.doc.toString();
+  tab.modified = tab.content !== tab.savedContent;
+  renderTabs();
+  if (tab.modified && tab.filePath) scheduleAutoSave(tab);
+}
+
 function refreshSplitClone() {
-  if (!splitEditorView || compareMode || splitFilePath) return;
+  if (!splitEditorView || splitMode !== 'clone') return;
   const tab = getActiveTab();
   if (!tab) return;
   syncingSplit = true;
@@ -1500,12 +1659,15 @@ function destroySplitEditor() {
   splitFilePath = null;
   splitModified = false;
   splitSavedContent = '';
+  splitMode = null;
+  splitTabId = null;
 }
 
 function createSplitEditor(content, langExt, mode) {
   const splitEl = document.getElementById('editor-split');
   destroySplitEditor();
   splitEl.innerHTML = '';
+  splitMode = mode;
 
   const extensions = [
     lineNumbers(),
@@ -1560,6 +1722,12 @@ function createSplitEditor(content, langExt, mode) {
     }),
   ];
 
+  extensions.push(
+    EditorView.updateListener.of((update) => {
+      if (update.selectionSet || update.docChanged) updateStatusBar();
+    })
+  );
+
   if (mode === 'compare') {
     extensions.push(EditorState.readOnly.of(true));
   } else if (mode === 'file') {
@@ -1568,6 +1736,19 @@ function createSplitEditor(content, langExt, mode) {
         if (!update.docChanged) return;
         splitModified = update.state.doc.toString() !== splitSavedContent;
         if (splitModified) scheduleSplitAutoSave();
+      })
+    );
+  } else if (mode === 'tab') {
+    extensions.push(
+      EditorView.updateListener.of((update) => {
+        if (!update.docChanged || syncingSplit) return;
+        const tab = tabs.find(t => t.id === splitTabId);
+        if (!tab) return;
+        if (tab.id === activeTabId) {
+          mirrorChanges(editorView, update);
+        } else {
+          applyChangesToTab(tab, update);
+        }
       })
     );
   } else {
@@ -1585,7 +1766,24 @@ function createSplitEditor(content, langExt, mode) {
     parent: splitEl,
   });
 
+  applyFontSize();
   return splitEditorView;
+}
+
+async function loadTabIntoSplitPane(tab) {
+  if (splitMode === 'tab' && splitTabId === tab.id && splitEditorView) {
+    splitEditorView.focus();
+    return;
+  }
+  if (compareMode) closeCompare();
+  if (!(await confirmDiscardSplit())) return;
+  if (tab.id === activeTabId && proseMode) syncProseToEditor();
+
+  if (!splitView) showSplitLayout();
+  createSplitEditor(tabContent(tab), getLanguageExtension(tab.filePath), 'tab');
+  splitTabId = tab.id;
+  splitEditorView.focus();
+  updateStatusBar();
 }
 
 function showSplitLayout() {
@@ -1696,11 +1894,12 @@ async function startCompare(rightPath, rightContent) {
   const rightName = getFileName(rightPath);
 
   compareMode = true;
+  compareRightPath = rightPath;
   showSplitLayout();
 
   computeCompareRanges(leftContent, rightContent);
 
-  editorView.dispatch({ effects: [] });
+  editorView.dispatch({ effects: refreshDecorations.of(null) });
 
   const langExt = getLanguageExtension(rightPath);
   createSplitEditor(rightContent, langExt, 'compare');
@@ -1777,11 +1976,12 @@ function syncCompareScroll() {
 
 function closeCompare() {
   compareMode = false;
+  compareRightPath = null;
 
   leftCompareRanges = [];
   rightCompareRanges = [];
 
-  editorView.dispatch({ effects: [] });
+  editorView.dispatch({ effects: refreshDecorations.of(null) });
 
   hideSplitLayout();
 
@@ -1931,19 +2131,17 @@ function wireEvents() {
   };
   document.getElementById('btn-wrap').addEventListener('click', toggleWrap);
 
-  document.getElementById('btn-find').addEventListener('click', () => {
-    openSearchPanel(editorView);
-  });
-  document.getElementById('btn-replace').addEventListener('click', () => {
-    openSearchPanel(editorView);
-  });
+  document.getElementById('btn-find').addEventListener('click', openFind);
+  document.getElementById('btn-replace').addEventListener('click', openFind);
   document.getElementById('btn-goto').addEventListener('click', showGotoLineDialog);
   document.getElementById('btn-fold-all').addEventListener('click', () => {
-    foldAll(editorView);
+    foldAll(activeView());
   });
   document.getElementById('btn-unfold-all').addEventListener('click', () => {
-    unfoldAll(editorView);
+    unfoldAll(activeView());
   });
+  document.getElementById('btn-grammar').addEventListener('click', runGrammarCheck);
+  document.getElementById('grammar-close').addEventListener('click', closeGrammarPanel);
   document.getElementById('btn-minimap').addEventListener('click', toggleMinimap);
   document.getElementById('btn-sidebar-toggle').addEventListener('click', toggleSidebar);
 
@@ -1973,12 +2171,15 @@ function wireEvents() {
 
   document.getElementById('prose-editor').addEventListener('focus', () => {
     focusedPane = 'prose';
+    updateStatusBar();
   });
   document.getElementById('editor').addEventListener('focusin', () => {
     focusedPane = 'left';
+    updateStatusBar();
   });
   document.getElementById('editor-split').addEventListener('focusin', () => {
     focusedPane = 'right';
+    updateStatusBar();
   });
 
   document.getElementById('btn-compare').addEventListener('click', openCompare);
@@ -1995,8 +2196,12 @@ function wireEvents() {
         startCompare(filePath, content);
         return;
       }
-      if (focusedPane === 'right' && splitView) {
-        loadFileIntoSplitPane(filePath);
+      if (focusedPane === 'right' && splitView && splitMode !== 'compare') {
+        openFileInRightPane(filePath);
+        return;
+      }
+      if (splitMode === 'file' && splitFilePath === filePath) {
+        adoptSplitFileAsTab();
         return;
       }
       const existing = tabs.find(t => t.filePath === filePath);
@@ -2014,14 +2219,16 @@ function wireEvents() {
     window.electronAPI.onMenuNew(() => createTab(null, ''));
     window.electronAPI.onMenuSave(() => saveCurrentFile());
     window.electronAPI.onMenuSaveAs(() => saveCurrentFileAs());
-    window.electronAPI.onMenuFind(() => openSearchPanel(editorView));
-    window.electronAPI.onMenuReplace(() => openSearchPanel(editorView));
+    window.electronAPI.onMenuUndo(doUndo);
+    window.electronAPI.onMenuRedo(doRedo);
+    window.electronAPI.onMenuFind(openFind);
+    window.electronAPI.onMenuReplace(openFind);
     window.electronAPI.onMenuGotoLine(showGotoLineDialog);
     window.electronAPI.onMenuToggleWrap(toggleWrap);
     window.electronAPI.onMenuToggleSidebar(toggleSidebar);
     window.electronAPI.onMenuToggleMinimap(toggleMinimap);
-    window.electronAPI.onMenuFoldAll(() => foldAll(editorView));
-    window.electronAPI.onMenuUnfoldAll(() => unfoldAll(editorView));
+    window.electronAPI.onMenuFoldAll(() => foldAll(activeView()));
+    window.electronAPI.onMenuUnfoldAll(() => unfoldAll(activeView()));
     window.electronAPI.onMenuZoomIn(() => setFontSize(fontSize + 2));
     window.electronAPI.onMenuZoomOut(() => setFontSize(fontSize - 2));
     window.electronAPI.onMenuZoomReset(() => setFontSize(14));
@@ -2075,6 +2282,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initSplitGutter();
   initDragAndDrop();
   initGotoLineDialog();
+  initProseFind();
   initMinimap();
   loadRecentFiles();
 });

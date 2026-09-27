@@ -126,8 +126,18 @@ function createWindow() {
     {
       label: 'Edit',
       submenu: [
-        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', role: 'undo' },
-        { label: 'Redo', accelerator: 'CmdOrCtrl+Shift+Z', role: 'redo' },
+        {
+          label: 'Undo',
+          accelerator: 'CmdOrCtrl+Z',
+          registerAccelerator: false,
+          click: () => mainWindow.webContents.send('menu-undo'),
+        },
+        {
+          label: 'Redo',
+          accelerator: 'CmdOrCtrl+Y',
+          registerAccelerator: false,
+          click: () => mainWindow.webContents.send('menu-redo'),
+        },
         { type: 'separator' },
         { label: 'Cut', accelerator: 'CmdOrCtrl+X', role: 'cut' },
         { label: 'Copy', accelerator: 'CmdOrCtrl+C', role: 'copy' },
