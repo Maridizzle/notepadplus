@@ -29,6 +29,7 @@
     <button id="btn-zoom-in" title="Zoom In (Ctrl+=)">A+</button>
     <button id="btn-zoom-out" title="Zoom Out (Ctrl+-)">A-</button>
     <span class="toolbar-separator"></span>
+    <span id="font-group">
     <label class="toolbar-label" for="font-select">Font:</label>
     <select id="font-select" title="Editor Font">
       <optgroup label="Code Fonts">
@@ -53,9 +54,12 @@
         <option value="'Times New Roman', serif">Times New Roman</option>
       </optgroup>
     </select>
+    </span>
     <span class="toolbar-separator"></span>
+    <span id="bg-group">
     <label class="toolbar-label" for="bg-color">BG:</label>
     <input type="color" id="bg-color" value="#282c34" title="Editor Background Color">
+    </span>
     <div id="bg-presets" title="Background Color Presets">
       <span class="bg-preset" data-color="#282c34" title="One Dark"></span>
       <span class="bg-preset" data-color="#1e1e1e" title="VS Dark"></span>
@@ -77,7 +81,9 @@
     <span class="toolbar-separator"></span>
     <button id="btn-compare" title="Compare Files">Compare</button>
     <button id="btn-link-map" title="Link Map (Ctrl+Shift+M)">Map</button>
+    <button id="toolbar-collapse" title="Hide toolbar (Ctrl+Shift+T). Right-click the toolbar to customize.">&#9650;</button>
   </div>
+  <div id="toolbar-grip" class="hidden" title="Show toolbar (Ctrl+Shift+T)">&#9660;</div>
 
   <div id="tab-bar">
     <div id="tabs-container"></div>
@@ -232,6 +238,18 @@
       <div class="dialog-buttons">
         <button id="col-ok">Insert</button>
         <button id="col-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toolbar-dialog" class="dialog-overlay hidden">
+    <div class="dialog-box dialog-wide dialog-tall">
+      <label>Customize Toolbar</label>
+      <div class="dialog-hint">Tick anything you want on the toolbar. Every menu command is available; built-in widgets keep their place and added commands appear at the end.</div>
+      <div id="toolbar-groups"></div>
+      <div class="dialog-buttons">
+        <button id="toolbar-reset" type="button" class="dialog-secondary">Reset to Default</button>
+        <button id="toolbar-done">Done</button>
       </div>
     </div>
   </div>

@@ -2852,6 +2852,9 @@ function collectSettings() {
     showWhitespace,
     showEol,
     showChangeHistory,
+    toolbarHidden: [...toolbarHidden],
+    toolbarExtra: [...toolbarExtra],
+    toolbarCollapsed,
   };
 }
 
@@ -2878,6 +2881,10 @@ function applySettings(s) {
   if (s.showWhitespace && !showWhitespace) toggleShowWhitespace();
   if (s.showEol && !showEol) toggleShowEol();
   if (s.showChangeHistory === false && showChangeHistory) toggleChangeHistory();
+  if (Array.isArray(s.toolbarHidden)) toolbarHidden = new Set(s.toolbarHidden.filter(id => TOOLBAR_BUILTIN.has(id)));
+  if (Array.isArray(s.toolbarExtra)) toolbarExtra = s.toolbarExtra.filter(id => TOOLBAR_ITEMS.some(i => i.id === id && !TOOLBAR_BUILTIN.has(i.id)));
+  if (typeof s.toolbarCollapsed === 'boolean') toolbarCollapsed = s.toolbarCollapsed;
+  applyToolbarConfig();
 }
 
 function applyPaneThemes() {
@@ -4050,6 +4057,8 @@ const commands = {
   'print': () => printCurrent(),
   'column-editor': () => showColumnEditor(),
   'link-map': () => toggleLinkMap(),
+  'toggle-toolbar': () => toggleToolbar(),
+  'customize-toolbar': () => showToolbarDialog(),
   'change-history': (action) => changeHistoryCommand(action),
   'check-closers': () => runCloserCheck(),
   'find': () => openFind(),
@@ -4076,6 +4085,283 @@ const commands = {
 function runCommand(name, arg) {
   const fn = commands[name];
   if (fn) fn(arg);
+}
+
+// Toolbar customization
+const TOOLBAR_CATALOG = [
+  { group: 'File', items: [
+    { id: 'btn-new', label: 'New' },
+    { id: 'btn-open', label: 'Open' },
+    { id: 'btn-save', label: 'Save' },
+    { id: 'btn-save-as', label: 'Save As' },
+    { id: 'reload', label: 'Reload', title: 'Reload from Disk', cmd: 'reload' },
+    { id: 'save-copy-as', label: 'Save Copy', title: 'Save a Copy As', cmd: 'save-copy-as' },
+    { id: 'save-all', label: 'Save All', cmd: 'save-all' },
+    { id: 'rename', label: 'Rename', cmd: 'rename' },
+    { id: 'close', label: 'Close', title: 'Close tab', cmd: 'close' },
+    { id: 'close-all', label: 'Close All', cmd: 'close-all' },
+    { id: 'close-others', label: 'Close Others', title: 'Close All But Active', cmd: 'close-others' },
+    { id: 'open-folder', label: 'Open Folder', run: () => window.electronAPI && window.electronAPI.openFolder() },
+    { id: 'open-containing-folder', label: 'Show in Folder', title: 'Open Containing Folder', cmd: 'open-containing-folder' },
+    { id: 'open-default-viewer', label: 'Open With', title: 'Open in Default Viewer', cmd: 'open-default-viewer' },
+    { id: 'summary', label: 'Summary', title: 'File Summary', cmd: 'summary' },
+    { id: 'print', label: 'Print', cmd: 'print' },
+  ] },
+  { group: 'Edit', items: [
+    { id: 'undo', label: 'Undo', cmd: 'undo' },
+    { id: 'redo', label: 'Redo', cmd: 'redo' },
+    { id: 'cut', label: 'Cut', run: () => editAction('cut') },
+    { id: 'copy', label: 'Copy', run: () => editAction('copy') },
+    { id: 'paste', label: 'Paste', run: () => editAction('paste') },
+    { id: 'select-all', label: 'Select All', run: () => editAction('selectAll') },
+    { id: 'copy-path', label: 'Copy Path', title: 'Copy Full File Path', cmd: 'copy-path' },
+    { id: 'copy-filename', label: 'Copy Name', title: 'Copy File Name', cmd: 'copy-filename' },
+    { id: 'copy-dir', label: 'Copy Dir', title: 'Copy Directory Path', cmd: 'copy-dir' },
+    { id: 'upper', label: 'UPPER', title: 'UPPERCASE', cmd: 'transform', arg: 'uppercase' },
+    { id: 'lower', label: 'lower', title: 'lowercase', cmd: 'transform', arg: 'lowercase' },
+    { id: 'proper', label: 'Proper', title: 'Proper Case', cmd: 'transform', arg: 'propercase' },
+    { id: 'sentence', label: 'Sentence', title: 'Sentence case', cmd: 'transform', arg: 'sentencecase' },
+    { id: 'invert', label: 'iNVERT', title: 'iNVERT cASE', cmd: 'transform', arg: 'invertcase' },
+    { id: 'random', label: 'ranDOm', title: 'ranDOm CasE', cmd: 'transform', arg: 'randomcase' },
+    { id: 'camel', label: 'camelCase', cmd: 'transform', arg: 'camelcase' },
+    { id: 'dup-line', label: 'Duplicate', title: 'Duplicate Current Line', cmd: 'line-op', arg: 'duplicate' },
+    { id: 'join', label: 'Join', title: 'Join Lines', cmd: 'line-op', arg: 'join' },
+    { id: 'move-up', label: 'Line Up', title: 'Move Up Current Line', cmd: 'line-op', arg: 'move-up' },
+    { id: 'move-down', label: 'Line Down', title: 'Move Down Current Line', cmd: 'line-op', arg: 'move-down' },
+    { id: 'sort-asc', label: 'Sort A-Z', title: 'Sort Lines Ascending', cmd: 'line-op', arg: 'sort-asc' },
+    { id: 'sort-desc', label: 'Sort Z-A', title: 'Sort Lines Descending', cmd: 'line-op', arg: 'sort-desc' },
+    { id: 'sort-asc-ci', label: 'Sort a-z', title: 'Sort Lines Ascending Ignoring Case', cmd: 'line-op', arg: 'sort-asc-ci' },
+    { id: 'sort-desc-ci', label: 'Sort z-a', title: 'Sort Lines Descending Ignoring Case', cmd: 'line-op', arg: 'sort-desc-ci' },
+    { id: 'sort-num-asc', label: 'Sort 1-9', title: 'Sort Lines As Numbers Ascending', cmd: 'line-op', arg: 'sort-num-asc' },
+    { id: 'sort-num-desc', label: 'Sort 9-1', title: 'Sort Lines As Numbers Descending', cmd: 'line-op', arg: 'sort-num-desc' },
+    { id: 'remove-dupes', label: 'Dedupe', title: 'Remove Duplicate Lines', cmd: 'line-op', arg: 'remove-dupes' },
+    { id: 'remove-consecutive-dupes', label: 'Dedupe Adjacent', title: 'Remove Consecutive Duplicate Lines', cmd: 'line-op', arg: 'remove-consecutive-dupes' },
+    { id: 'remove-empty', label: 'No Empties', title: 'Remove Empty Lines', cmd: 'line-op', arg: 'remove-empty' },
+    { id: 'trim', label: 'Trim', title: 'Trim Trailing Whitespace', cmd: 'line-op', arg: 'trim' },
+    { id: 'reverse', label: 'Reverse', title: 'Reverse Line Order', cmd: 'line-op', arg: 'reverse' },
+    { id: 'randomize', label: 'Shuffle', title: 'Randomize Line Order', cmd: 'line-op', arg: 'randomize' },
+    { id: 'toggle-line-comment', label: 'Comment', title: 'Toggle Single Line Comment', cmd: 'toggle-line-comment' },
+    { id: 'toggle-block-comment', label: 'Block Comment', title: 'Toggle Block Comment', cmd: 'toggle-block-comment' },
+    { id: 'column-editor', label: 'Columns', title: 'Column Editor', cmd: 'column-editor' },
+    { id: 'eol-crlf', label: 'CRLF', title: 'Convert line endings to Windows (CR LF)', cmd: 'set-eol', arg: '\r\n' },
+    { id: 'eol-lf', label: 'LF', title: 'Convert line endings to Unix (LF)', cmd: 'set-eol', arg: '\n' },
+    { id: 'eol-cr', label: 'CR', title: 'Convert line endings to Macintosh (CR)', cmd: 'set-eol', arg: '\r' },
+  ] },
+  { group: 'Search', items: [
+    { id: 'btn-find', label: 'Find' },
+    { id: 'btn-replace', label: 'Replace' },
+    { id: 'btn-goto', label: 'Go to' },
+    { id: 'find-in-files', label: 'Find in Files', cmd: 'find-in-files' },
+    { id: 'bm-toggle', label: 'Bookmark', title: 'Toggle Bookmark', cmd: 'bookmark', arg: 'toggle' },
+    { id: 'bm-next', label: 'Next Mark', title: 'Next Bookmark', cmd: 'bookmark', arg: 'next' },
+    { id: 'bm-prev', label: 'Prev Mark', title: 'Previous Bookmark', cmd: 'bookmark', arg: 'prev' },
+    { id: 'bm-clear', label: 'Clear Marks', title: 'Clear All Bookmarks', cmd: 'bookmark', arg: 'clear' },
+    { id: 'bm-cut', label: 'Cut Marked', title: 'Cut Bookmarked Lines', cmd: 'bookmark', arg: 'cut' },
+    { id: 'bm-copy', label: 'Copy Marked', title: 'Copy Bookmarked Lines', cmd: 'bookmark', arg: 'copy' },
+    { id: 'bm-remove', label: 'Remove Marked', title: 'Remove Bookmarked Lines', cmd: 'bookmark', arg: 'remove' },
+    { id: 'bm-remove-unmarked', label: 'Keep Marked', title: 'Remove Unmarked Lines', cmd: 'bookmark', arg: 'remove-unmarked' },
+    { id: 'bm-inverse', label: 'Invert Marks', title: 'Inverse Bookmark', cmd: 'bookmark', arg: 'inverse' },
+    { id: 'ch-next', label: 'Next Change', title: 'Go to Next Change', cmd: 'change-history', arg: 'next' },
+    { id: 'ch-prev', label: 'Prev Change', title: 'Go to Previous Change', cmd: 'change-history', arg: 'prev' },
+    { id: 'ch-clear', label: 'Clear Changes', title: 'Clear Change History', cmd: 'change-history', arg: 'clear' },
+    { id: 'ch-toggle', label: 'Change Bars', title: 'Toggle Change History Margin', cmd: 'change-history', arg: 'toggle' },
+    { id: 'btn-closers', label: 'Closers' },
+  ] },
+  { group: 'Encoding and Language', items: [
+    { id: 'enc-utf8', label: 'UTF-8', title: 'Convert to UTF-8', cmd: 'set-encoding', arg: 'utf8' },
+    { id: 'enc-utf8bom', label: 'UTF-8-BOM', title: 'Convert to UTF-8-BOM', cmd: 'set-encoding', arg: 'utf8bom' },
+    { id: 'enc-utf16le', label: 'UTF-16 LE', title: 'Convert to UTF-16 LE', cmd: 'set-encoding', arg: 'utf16le' },
+    { id: 'enc-utf16be', label: 'UTF-16 BE', title: 'Convert to UTF-16 BE', cmd: 'set-encoding', arg: 'utf16be' },
+    { id: 'enc-ansi', label: 'ANSI', title: 'Convert to ANSI (Windows-1252)', cmd: 'set-encoding', arg: 'ansi' },
+    { id: 'language-menu', label: 'Language', title: 'Choose language', run: (el) => showLanguageMenu(el) },
+  ] },
+  { group: 'View', items: [
+    { id: 'btn-fold-all', label: 'Fold All' },
+    { id: 'btn-unfold-all', label: 'Unfold All' },
+    { id: 'btn-wrap', label: 'Wrap' },
+    { id: 'btn-minimap', label: 'Minimap' },
+    { id: 'btn-sidebar-toggle', label: 'Sidebar' },
+    { id: 'btn-zoom-in', label: 'A+ (zoom in)' },
+    { id: 'btn-zoom-out', label: 'A- (zoom out)' },
+    { id: 'zoom-reset', label: 'A=', title: 'Reset Zoom', cmd: 'zoom-reset' },
+    { id: 'font-group', label: 'Font picker', widget: true },
+    { id: 'bg-group', label: 'Background color', widget: true },
+    { id: 'bg-presets', label: 'Background presets', widget: true },
+    { id: 'toggle-whitespace', label: 'Spaces', title: 'Toggle Show Space and Tab', cmd: 'toggle-whitespace' },
+    { id: 'toggle-eol-markers', label: 'EOL Marks', title: 'Toggle Show End of Line', cmd: 'toggle-eol-markers' },
+    { id: 'toggle-split', label: 'Split', title: 'Toggle Split View', cmd: 'toggle-split' },
+    { id: 'focus-other-view', label: 'Other Pane', title: 'Focus Other View', cmd: 'focus-other-view' },
+    { id: 'btn-link-map', label: 'Map' },
+    { id: 'tab-next', label: 'Next Tab', cmd: 'tab', arg: 'next' },
+    { id: 'tab-prev', label: 'Prev Tab', title: 'Previous Tab', cmd: 'tab', arg: 'prev' },
+    { id: 'tab-first', label: 'First Tab', cmd: 'tab', arg: 'first' },
+    { id: 'tab-last', label: 'Last Tab', cmd: 'tab', arg: 'last' },
+    { id: 'toggle-theme', label: 'Theme', title: 'Toggle Theme (Dark/Light)', cmd: 'toggle-theme' },
+    { id: 'autosave-indicator', label: 'Auto-save indicator', widget: true },
+  ] },
+  { group: 'Tools', items: [
+    { id: 'btn-prose', label: 'Prose' },
+    { id: 'btn-grammar', label: 'Grammar' },
+    { id: 'btn-compare', label: 'Compare' },
+  ] },
+];
+
+const TOOLBAR_ITEMS = TOOLBAR_CATALOG.flatMap(g => g.items);
+const TOOLBAR_BUILTIN = new Set(TOOLBAR_ITEMS.filter(i => !i.cmd && !i.run).map(i => i.id));
+let toolbarHidden = new Set();
+let toolbarExtra = [];
+let toolbarCollapsed = false;
+
+function editAction(action) {
+  if (window.electronAPI && window.electronAPI.editAction) {
+    window.electronAPI.editAction({ action });
+  } else {
+    document.execCommand(action === 'selectAll' ? 'selectAll' : action);
+  }
+}
+
+function toolbarItemVisible(item) {
+  return TOOLBAR_BUILTIN.has(item.id) ? !toolbarHidden.has(item.id) : toolbarExtra.includes(item.id);
+}
+
+function runToolbarItem(item, el) {
+  if (item.run) item.run(el);
+  else if (item.cmd) runCommand(item.cmd, item.arg);
+}
+
+function tidyToolbarSeparators() {
+  const toolbar = document.getElementById('toolbar');
+  const children = [...toolbar.children];
+  const visible = (el) => !el.classList.contains('tb-hidden') && !el.classList.contains('toolbar-separator') && el.id !== 'toolbar-collapse';
+  let seenVisible = false;
+  let lastSep = null;
+  for (const el of children) {
+    if (el.classList.contains('toolbar-separator')) {
+      el.classList.toggle('tb-hidden', !seenVisible);
+      if (seenVisible) { lastSep = el; seenVisible = false; }
+    } else if (visible(el)) {
+      seenVisible = true;
+    }
+  }
+  if (!seenVisible && lastSep) lastSep.classList.add('tb-hidden');
+}
+
+function applyToolbarConfig() {
+  const toolbar = document.getElementById('toolbar');
+  for (const id of TOOLBAR_BUILTIN) {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('tb-hidden', toolbarHidden.has(id));
+  }
+  toolbar.querySelectorAll('.tb-extra, .tb-extra-sep').forEach(el => el.remove());
+
+  const collapse = document.getElementById('toolbar-collapse');
+  const extras = TOOLBAR_ITEMS.filter(i => !TOOLBAR_BUILTIN.has(i.id) && toolbarExtra.includes(i.id));
+  if (extras.length) {
+    const sep = document.createElement('span');
+    sep.className = 'toolbar-separator tb-extra-sep';
+    toolbar.insertBefore(sep, collapse);
+    for (const item of extras) {
+      const btn = document.createElement('button');
+      btn.className = 'tb-extra';
+      btn.dataset.tbId = item.id;
+      btn.textContent = item.label;
+      btn.title = item.title || item.label;
+      btn.addEventListener('click', () => runToolbarItem(item, btn));
+      toolbar.insertBefore(btn, collapse);
+    }
+  }
+  tidyToolbarSeparators();
+
+  toolbar.classList.toggle('collapsed', toolbarCollapsed);
+  document.getElementById('toolbar-grip').classList.toggle('hidden', !toolbarCollapsed);
+}
+
+function toggleToolbar() {
+  toolbarCollapsed = !toolbarCollapsed;
+  applyToolbarConfig();
+}
+
+function toolbarItemForElement(el) {
+  const target = el.closest('[data-tb-id], #toolbar > *');
+  if (!target) return null;
+  const id = target.dataset.tbId || target.id;
+  const wrap = target.closest('#font-group, #bg-group, #bg-presets');
+  const wrapId = wrap ? wrap.id : null;
+  return TOOLBAR_ITEMS.find(i => i.id === id || i.id === wrapId) || null;
+}
+
+function hideToolbarItem(item) {
+  if (TOOLBAR_BUILTIN.has(item.id)) toolbarHidden.add(item.id);
+  else toolbarExtra = toolbarExtra.filter(id => id !== item.id);
+  applyToolbarConfig();
+}
+
+function showToolbarContextMenu(e) {
+  e.preventDefault();
+  const item = toolbarItemForElement(e.target);
+  const items = [];
+  if (item) items.push([`Hide "${item.label}"`, () => hideToolbarItem(item)]);
+  items.push(['Customize Toolbar...', showToolbarDialog]);
+  items.push(['Hide Toolbar', toggleToolbar]);
+  showPopupMenu(e.clientX, e.clientY, items);
+}
+
+function showToolbarDialog() {
+  const container = document.getElementById('toolbar-groups');
+  container.innerHTML = '';
+  for (const group of TOOLBAR_CATALOG) {
+    const box = document.createElement('div');
+    box.className = 'tb-group';
+    const h = document.createElement('h4');
+    h.textContent = group.group;
+    box.appendChild(h);
+    for (const item of group.items) {
+      const label = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = toolbarItemVisible(item);
+      cb.addEventListener('change', () => {
+        if (TOOLBAR_BUILTIN.has(item.id)) {
+          if (cb.checked) toolbarHidden.delete(item.id); else toolbarHidden.add(item.id);
+        } else if (cb.checked) {
+          if (!toolbarExtra.includes(item.id)) toolbarExtra.push(item.id);
+        } else {
+          toolbarExtra = toolbarExtra.filter(id => id !== item.id);
+        }
+        applyToolbarConfig();
+      });
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(' ' + (item.title && item.title !== item.label ? `${item.label} (${item.title})` : item.label)));
+      box.appendChild(label);
+    }
+    container.appendChild(box);
+  }
+  document.getElementById('toolbar-dialog').classList.remove('hidden');
+}
+
+function hideToolbarDialog() {
+  document.getElementById('toolbar-dialog').classList.add('hidden');
+}
+
+function initToolbarCustomization() {
+  const toolbar = document.getElementById('toolbar');
+  toolbar.addEventListener('contextmenu', showToolbarContextMenu);
+  document.getElementById('toolbar-collapse').addEventListener('click', toggleToolbar);
+  document.getElementById('toolbar-grip').addEventListener('click', toggleToolbar);
+  document.getElementById('toolbar-done').addEventListener('click', hideToolbarDialog);
+  document.getElementById('toolbar-reset').addEventListener('click', () => {
+    toolbarHidden = new Set();
+    toolbarExtra = [];
+    applyToolbarConfig();
+    showToolbarDialog();
+  });
+  document.getElementById('toolbar-dialog').addEventListener('click', (e) => {
+    if (e.target.classList.contains('dialog-overlay')) hideToolbarDialog();
+  });
+  document.getElementById('toolbar-dialog').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideToolbarDialog();
+  });
+  applyToolbarConfig();
 }
 
 // Link map
@@ -4642,6 +4928,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initRenameDialog();
   initColumnEditor();
   initLinkMap();
+  initToolbarCustomization();
   initMinimap();
   loadRecentFiles();
 });

@@ -453,6 +453,8 @@ function buildMenu() {
     {
       label: 'View',
       submenu: [
+        cmd('Toggle Toolbar', 'toggle-toolbar', { accelerator: 'CmdOrCtrl+Shift+T' }),
+        cmd('Customize Toolbar...', 'customize-toolbar'),
         cmd('Toggle Sidebar', 'toggle-sidebar', { accelerator: 'CmdOrCtrl+B' }),
         cmd('Toggle Minimap', 'toggle-minimap'),
         { type: 'separator' },
@@ -787,6 +789,11 @@ async function scanLinks(rootDir) {
   }
   return { files, links };
 }
+
+ipcMain.handle('edit-action', async (event, { action }) => {
+  const allowed = ['cut', 'copy', 'paste', 'selectAll'];
+  if (mainWindow && allowed.includes(action)) mainWindow.webContents[action]();
+});
 
 ipcMain.handle('scan-links', async (event, { dirPath }) => {
   try {
