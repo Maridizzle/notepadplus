@@ -1333,6 +1333,151 @@ body.light-theme .dialog-buttons button:last-child {
   display: none;
 }
 
+/* Change history margin */
+.cm-change-gutter {
+  width: 4px;
+}
+
+.cm-change-bar {
+  width: 4px;
+  height: 100%;
+}
+
+.cm-change-unsaved {
+  background: #e0a030;
+}
+
+.cm-change-saved {
+  background: #4ec969;
+}
+
+/* Closer detector */
+.cm-closer-open {
+  background: rgba(220, 60, 60, 0.3);
+  outline: 1px solid rgba(220, 60, 60, 0.7);
+  border-radius: 2px;
+}
+
+.cm-closer-extra {
+  background: rgba(220, 60, 60, 0.45);
+  outline: 1px solid #dc4040;
+  border-radius: 2px;
+  text-decoration: line-through;
+}
+
+.cm-closer-hint {
+  display: inline-block;
+  color: #4ec969;
+  border: 1px dashed #4ec969;
+  border-radius: 2px;
+  padding: 0 3px;
+  margin: 0 1px;
+  font-weight: 700;
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+#closer-panel {
+  width: 300px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 2px solid var(--char-black);
+  background: var(--bg-secondary);
+  overflow: hidden;
+}
+
+#closer-panel.hidden {
+  display: none;
+}
+
+#closer-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--oxidized-brass);
+  border-bottom: 2px solid var(--char-black);
+  background: rgba(0, 0, 0, 0.1);
+}
+
+#closer-status {
+  flex: 1;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#closer-rerun,
+#closer-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+#closer-rerun:hover,
+#closer-close:hover {
+  color: var(--text-active);
+}
+
+#closer-options {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--char-black);
+}
+
+#closer-options input {
+  accent-color: var(--accent);
+}
+
+#closer-results {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* Column editor */
+.dialog-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.dialog-grid label {
+  margin: 0;
+  font-size: 12px;
+}
+
+.dialog-grid input {
+  margin-bottom: 0;
+}
+
+#col-text-fields.disabled,
+#col-number-fields.disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.dialog-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+
 /* Grammar panel */
 #grammar-panel {
   width: 300px;

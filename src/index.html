@@ -73,6 +73,7 @@
     <span class="toolbar-separator"></span>
     <button id="btn-prose" title="Toggle Prose Mode for Grammarly">Prose</button>
     <button id="btn-grammar" title="Check Grammar (LanguageTool)">Grammar</button>
+    <button id="btn-closers" title="Find missing or extra brackets and quotes">Closers</button>
     <span class="toolbar-separator"></span>
     <button id="btn-compare" title="Compare Files">Compare</button>
   </div>
@@ -126,6 +127,16 @@
       </div>
       <div id="grammar-results"></div>
     </div>
+    <div id="closer-panel" class="hidden">
+      <div id="closer-header">
+        <span>CLOSERS</span>
+        <span id="closer-status"></span>
+        <button id="closer-rerun" title="Re-check">&#8635;</button>
+        <button id="closer-close" title="Close">&times;</button>
+      </div>
+      <label id="closer-options"><input type="checkbox" id="closer-quotes" checked> Check quotes</label>
+      <div id="closer-results"></div>
+    </div>
   </div>
 
   <div id="search-results" class="hidden">
@@ -173,6 +184,38 @@
     <button id="prose-find-prev" title="Previous">&uarr;</button>
     <button id="prose-find-next" title="Next">&darr;</button>
     <button id="prose-find-close" title="Close">&times;</button>
+  </div>
+
+  <div id="column-dialog" class="dialog-overlay hidden">
+    <div class="dialog-box dialog-wide">
+      <label>Column Editor</label>
+      <div class="dialog-checks">
+        <label><input type="radio" name="col-mode" value="text" checked> Text to insert</label>
+        <label><input type="radio" name="col-mode" value="number"> Number to insert</label>
+      </div>
+      <div id="col-text-fields">
+        <input type="text" id="col-text" placeholder="Text">
+      </div>
+      <div id="col-number-fields" class="disabled">
+        <div class="dialog-grid">
+          <label for="col-initial">Initial number</label><input type="number" id="col-initial" value="1">
+          <label for="col-step">Increase by</label><input type="number" id="col-step" value="1">
+          <label for="col-repeat">Repeat</label><input type="number" id="col-repeat" value="1" min="1">
+        </div>
+        <div class="dialog-checks">
+          <label><input type="checkbox" id="col-zeros"> Leading zeros</label>
+          <label><input type="radio" name="col-format" value="dec" checked> Dec</label>
+          <label><input type="radio" name="col-format" value="hex"> Hex</label>
+          <label><input type="radio" name="col-format" value="oct"> Oct</label>
+          <label><input type="radio" name="col-format" value="bin"> Bin</label>
+        </div>
+      </div>
+      <div class="dialog-hint">Applies at the caret column from the current line down, to the selected lines, or to each range of a column selection.</div>
+      <div class="dialog-buttons">
+        <button id="col-ok">Insert</button>
+        <button id="col-cancel">Cancel</button>
+      </div>
+    </div>
   </div>
 
   <div id="rename-dialog" class="dialog-overlay hidden">

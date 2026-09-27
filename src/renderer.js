@@ -315,6 +315,529 @@ function bookmarkExtensions() {
   return [bookmarkField, bookmarkGutter];
 }
 
+// Change history margin
+const markSavedEffect = StateEffect.define();
+const clearHistoryEffect = StateEffect.define();
+const changeHistoryCompartment = new Compartment();
+const splitChangeHistoryCompartment = new Compartment();
+let showChangeHistory = true;
+
+class ChangeMarker extends GutterMarker {
+  constructor(kind) {
+    super();
+    this.kind = kind;
+  }
+  eq(other) {
+    return other.kind === this.kind;
+  }
+  toDOM() {
+    const el = document.createElement('div');
+    el.className = 'cm-change-bar cm-change-' + this.kind;
+    return el;
+  }
+}
+const unsavedMarker = new ChangeMarker('unsaved');
+const savedMarker = new ChangeMarker('saved');
+
+function rebuildChangeSet(entries, doc) {
+  const byLine = new Map();
+  for (const [pos, kind] of entries) {
+    const from = doc.lineAt(Math.min(pos, doc.length)).from;
+    if (kind === 'unsaved' || !byLine.has(from)) byLine.set(from, kind);
+  }
+  return RangeSet.of(
+    [...byLine.entries()].sort((a, b) => a[0] - b[0]).map(([from, kind]) => (kind === 'unsaved' ? unsavedMarker : savedMarker).range(from))
+  );
+}
+
+const changeHistoryField = StateField.define({
+  create() {
+    return RangeSet.empty;
+  },
+  update(set, tr) {
+    for (const e of tr.effects) {
+      if (e.is(clearHistoryEffect)) return RangeSet.empty;
+    }
+    if (tr.docChanged) {
+      set = set.map(tr.changes);
+      const entries = [];
+      const iter = set.iter();
+      while (iter.value) {
+        entries.push([iter.from, iter.value.kind]);
+        iter.next();
+      }
+      const doc = tr.state.doc;
+      tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+        const first = doc.lineAt(fromB).number;
+        const last = doc.lineAt(Math.min(toB, doc.length)).number;
+        for (let n = first; n <= last; n++) entries.push([doc.line(n).from, 'unsaved']);
+      });
+      set = rebuildChangeSet(entries, doc);
+    }
+    for (const e of tr.effects) {
+      if (e.is(markSavedEffect)) {
+        const entries = [];
+        const iter = set.iter();
+        while (iter.value) {
+          entries.push([iter.from, 'saved']);
+          iter.next();
+        }
+        set = rebuildChangeSet(entries, tr.state.doc);
+      }
+    }
+    return set;
+  },
+});
+
+const changeHistoryGutter = gutter({
+  class: 'cm-change-gutter',
+  markers: v => v.state.field(changeHistoryField),
+  initialSpacer: () => unsavedMarker,
+});
+
+function changeHistoryExtensions(compartment) {
+  return [changeHistoryField, compartment.of(showChangeHistory ? changeHistoryGutter : [])];
+}
+
+function toggleChangeHistory() {
+  showChangeHistory = !showChangeHistory;
+  editorView.dispatch({ effects: changeHistoryCompartment.reconfigure(showChangeHistory ? changeHistoryGutter : []) });
+  if (splitEditorView) {
+    splitEditorView.dispatch({ effects: splitChangeHistoryCompartment.reconfigure(showChangeHistory ? changeHistoryGutter : []) });
+  }
+}
+
+function markTabHistorySaved(tab) {
+  const effect = markSavedEffect.of(null);
+  if (tab.id === activeTabId) {
+    editorView.dispatch({ effects: effect });
+  } else if (tab.state) {
+    tab.state = tab.state.update({ effects: effect }).state;
+  }
+  if (splitEditorView && ((splitMode === 'tab' && splitTabId === tab.id) || (splitMode === 'clone' && tab.id === activeTabId))) {
+    splitEditorView.dispatch({ effects: effect });
+  }
+}
+
+function changedLines(state) {
+  const lines = [];
+  const iter = state.field(changeHistoryField).iter();
+  while (iter.value) {
+    lines.push(state.doc.lineAt(iter.from).number);
+    iter.next();
+  }
+  return lines;
+}
+
+function gotoChange(view, direction) {
+  const lines = changedLines(view.state);
+  if (!lines.length) return;
+  const current = view.state.doc.lineAt(view.state.selection.main.head).number;
+  let target;
+  if (direction > 0) target = lines.find(n => n > current) ?? lines[0];
+  else target = [...lines].reverse().find(n => n < current) ?? lines[lines.length - 1];
+  const line = view.state.doc.line(target);
+  view.dispatch({ selection: { anchor: line.from }, effects: EditorView.scrollIntoView(line.from, { y: 'center' }) });
+  view.focus();
+}
+
+function changeHistoryCommand(action) {
+  const view = activeView();
+  if (!view) return;
+  if (action === 'next') gotoChange(view, 1);
+  else if (action === 'prev') gotoChange(view, -1);
+  else if (action === 'clear') view.dispatch({ effects: clearHistoryEffect.of(null) });
+  else if (action === 'toggle') toggleChangeHistory();
+}
+
+// Column editor
+function columnEditorTargets(view) {
+  const state = view.state;
+  const doc = state.doc;
+  const ranges = state.selection.ranges;
+  if (ranges.length > 1) {
+    return [...ranges]
+      .sort((a, b) => a.from - b.from)
+      .map(r => ({ from: r.from, to: r.to, pad: 0 }));
+  }
+  const main = state.selection.main;
+  const startLine = doc.lineAt(main.from);
+  const col = main.from - startLine.from;
+  const endLineNo = main.empty ? doc.lines : doc.lineAt(main.to).number;
+  const targets = [];
+  for (let n = startLine.number; n <= endLineNo; n++) {
+    const line = doc.line(n);
+    if (line.length >= col) targets.push({ from: line.from + col, to: line.from + col, pad: 0 });
+    else targets.push({ from: line.to, to: line.to, pad: col - line.length });
+  }
+  return targets;
+}
+
+function columnEditorValues(count, opts) {
+  if (opts.mode === 'text') return Array(count).fill(opts.text || '');
+  const radix = { dec: 10, hex: 16, oct: 8, bin: 2 }[opts.format] || 10;
+  const repeat = Math.max(1, opts.repeat || 1);
+  const raw = [];
+  for (let i = 0; i < count; i++) raw.push(opts.initial + opts.step * Math.floor(i / repeat));
+  const strs = raw.map(v => (v < 0 ? '-' : '') + Math.abs(Math.trunc(v)).toString(radix).toUpperCase());
+  if (!opts.leadingZeros) return strs;
+  const width = Math.max(...strs.map(s => s.replace('-', '').length));
+  return strs.map(s => (s.startsWith('-') ? '-' + s.slice(1).padStart(width, '0') : s.padStart(width, '0')));
+}
+
+function applyColumnEditor(opts) {
+  const view = editableView();
+  if (!view) return;
+  const targets = columnEditorTargets(view);
+  if (!targets.length) return;
+  const values = columnEditorValues(targets.length, opts);
+  const changes = targets.map((t, i) => ({ from: t.from, to: t.to, insert: ' '.repeat(t.pad) + values[i] }));
+  view.dispatch({ changes });
+  view.focus();
+}
+
+function showColumnEditor() {
+  const dialog = document.getElementById('column-dialog');
+  dialog.classList.remove('hidden');
+  updateColumnEditorMode();
+  const mode = document.querySelector('input[name="col-mode"]:checked').value;
+  document.getElementById(mode === 'text' ? 'col-text' : 'col-initial').focus();
+}
+
+function hideColumnEditor() {
+  document.getElementById('column-dialog').classList.add('hidden');
+  activeView().focus();
+}
+
+function updateColumnEditorMode() {
+  const mode = document.querySelector('input[name="col-mode"]:checked').value;
+  document.getElementById('col-text-fields').classList.toggle('disabled', mode !== 'text');
+  document.getElementById('col-number-fields').classList.toggle('disabled', mode !== 'number');
+}
+
+function executeColumnEditor() {
+  const mode = document.querySelector('input[name="col-mode"]:checked').value;
+  const opts = {
+    mode,
+    text: document.getElementById('col-text').value,
+    initial: parseInt(document.getElementById('col-initial').value, 10) || 0,
+    step: parseInt(document.getElementById('col-step').value, 10) || 0,
+    repeat: parseInt(document.getElementById('col-repeat').value, 10) || 1,
+    leadingZeros: document.getElementById('col-zeros').checked,
+    format: document.querySelector('input[name="col-format"]:checked').value,
+  };
+  hideColumnEditor();
+  applyColumnEditor(opts);
+}
+
+function initColumnEditor() {
+  document.querySelectorAll('input[name="col-mode"]').forEach(el => el.addEventListener('change', updateColumnEditorMode));
+  document.getElementById('col-ok').addEventListener('click', executeColumnEditor);
+  document.getElementById('col-cancel').addEventListener('click', hideColumnEditor);
+  document.getElementById('column-dialog').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'checkbox' && e.target.type !== 'radio') executeColumnEditor();
+    if (e.key === 'Escape') hideColumnEditor();
+  });
+  document.getElementById('column-dialog').addEventListener('click', (e) => {
+    if (e.target.classList.contains('dialog-overlay')) hideColumnEditor();
+  });
+}
+
+// Closer detector
+const CLOSER_PAIRS = { '(': ')', '[': ']', '{': '}' };
+const CLOSER_OPENERS = { ')': '(', ']': '[', '}': '{' };
+const C_LIKE = new Set(['javascript', 'jsx', 'typescript', 'tsx', 'java', 'c', 'cpp', 'php', 'rust', 'go', 'swift', 'kotlin', 'csharp', 'scala', 'dart', 'objectivec', 'd', 'groovy', 'json']);
+const HASH_COMMENT = new Set(['python', 'shell', 'ruby', 'perl', 'yaml', 'toml', 'ini', 'powershell', 'r', 'julia', 'cmake', 'dockerfile', 'nginx', 'crystal', 'elm', 'coffeescript', 'tcl']);
+const DASH_COMMENT = new Set(['sql', 'lua', 'haskell', 'vhdl']);
+const MARKUP = new Set(['html', 'xml', 'markdown']);
+const PROSE = new Set(['plain', 'markdown', 'latex']);
+const BACKTICK_LANGS = new Set(['javascript', 'jsx', 'typescript', 'tsx', 'shell', 'go', 'markdown']);
+
+let closerMarks = [];
+let closerIssues = [];
+
+function closerScan(text, langKey, checkQuotes) {
+  const issues = [];
+  const marks = [];
+  const lineStarts = [0];
+  for (let i = 0; i < text.length; i++) if (text[i] === '\n') lineStarts.push(i + 1);
+  const lineOf = (pos) => {
+    let lo = 0, hi = lineStarts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (lineStarts[mid] <= pos) lo = mid; else hi = mid - 1;
+    }
+    return lo + 1;
+  };
+  const lineText = (n) => text.slice(lineStarts[n - 1], n < lineStarts.length ? lineStarts[n] - 1 : text.length);
+  const indentOf = (s) => (/^\s*/.exec(s)[0]).length;
+
+  const prose = PROSE.has(langKey);
+  const cLike = C_LIKE.has(langKey) || langKey === 'css';
+  const hash = HASH_COMMENT.has(langKey);
+  const dash = DASH_COMMENT.has(langKey);
+  const markup = MARKUP.has(langKey);
+  const singleQuotes = checkQuotes && !prose && !markup;
+  const doubleQuotes = checkQuotes && !prose;
+  const backticks = checkQuotes && BACKTICK_LANGS.has(langKey);
+  const triple = langKey === 'python';
+
+  const stack = [];
+  let i = 0;
+  const n = text.length;
+
+  const suggestBlockClosePos = (openPos) => {
+    const openLine = lineOf(openPos);
+    const baseIndent = indentOf(lineText(openLine));
+    for (let ln = openLine + 1; ln < lineStarts.length; ln++) {
+      const s = lineText(ln);
+      if (!s.trim()) continue;
+      if (indentOf(s) <= baseIndent) {
+        let prev = ln - 1;
+        while (prev > openLine && !lineText(prev).trim()) prev--;
+        return lineStarts[prev - 1] + lineText(prev).length;
+      }
+    }
+    const last = lineStarts.length;
+    return lineStarts[last - 1] + lineText(last).length;
+  };
+
+  const suggestInlineClosePos = (openPos) => {
+    const ln = lineOf(openPos);
+    const s = lineText(ln);
+    let t = s.replace(/\s+$/, '');
+    if (/[;,{]$/.test(t)) t = t.slice(0, -1).replace(/\s+$/, '');
+    const pos = lineStarts[ln - 1] + t.length;
+    return Math.max(openPos + 1, pos);
+  };
+
+  const suggestClosePos = (open, limit) => {
+    let pos = open.char === '{' ? suggestBlockClosePos(open.pos) : suggestInlineClosePos(open.pos);
+    if (limit != null) {
+      if (lineOf(open.pos) === lineOf(limit) || pos > limit) pos = limit;
+    }
+    return pos;
+  };
+
+  while (i < n) {
+    const ch = text[i];
+    const next = text[i + 1];
+
+    if (cLike && ch === '/' && next === '/') { while (i < n && text[i] !== '\n') i++; continue; }
+    if (cLike && ch === '/' && next === '*') { const end = text.indexOf('*/', i + 2); i = end < 0 ? n : end + 2; continue; }
+    if (hash && ch === '#') { while (i < n && text[i] !== '\n') i++; continue; }
+    if (dash && ch === '-' && next === '-') { while (i < n && text[i] !== '\n') i++; continue; }
+    if (markup && text.startsWith('<!--', i)) { const end = text.indexOf('-->', i + 4); i = end < 0 ? n : end + 3; continue; }
+
+    if (triple && (text.startsWith('"""', i) || text.startsWith("'''", i))) {
+      const q = text.slice(i, i + 3);
+      const end = text.indexOf(q, i + 3);
+      if (end < 0) {
+        issues.push({ kind: 'quote', char: q, pos: i, line: lineOf(i), message: `Unclosed ${q} string opened on line ${lineOf(i)}` });
+        marks.push({ from: i, to: i + 3, cls: 'cm-closer-open' });
+        i = n;
+      } else i = end + 3;
+      continue;
+    }
+
+    if ((ch === '"' && doubleQuotes) || (ch === "'" && singleQuotes) || (ch === '`' && backticks)) {
+      const multi = ch === '`';
+      let j = i + 1;
+      let closed = false;
+      while (j < n) {
+        if (text[j] === '\\') { j += 2; continue; }
+        if (text[j] === ch) { closed = true; break; }
+        if (text[j] === '\n' && !multi) break;
+        j++;
+      }
+      if (!closed) {
+        if (prose && ch === '"') {
+          i++;
+          continue;
+        }
+        issues.push({ kind: 'quote', char: ch, pos: i, line: lineOf(i), message: `Unclosed ${ch} quote on line ${lineOf(i)}` });
+        marks.push({ from: i, to: i + 1, cls: 'cm-closer-open' });
+        i = multi ? n : j;
+        continue;
+      }
+      i = j + 1;
+      continue;
+    }
+
+    if (CLOSER_PAIRS[ch]) {
+      stack.push({ char: ch, pos: i });
+    } else if (CLOSER_OPENERS[ch]) {
+      const want = CLOSER_OPENERS[ch];
+      if (stack.length && stack[stack.length - 1].char === want) {
+        stack.pop();
+      } else {
+        const idx = stack.map(s => s.char).lastIndexOf(want);
+        if (idx < 0) {
+          issues.push({ kind: 'extra', char: ch, pos: i, line: lineOf(i), message: `Extra ${ch} on line ${lineOf(i)} with no matching ${want}` });
+          marks.push({ from: i, to: i + 1, cls: 'cm-closer-extra' });
+        } else {
+          for (let k = stack.length - 1; k > idx; k--) {
+            const open = stack[k];
+            const closer = CLOSER_PAIRS[open.char];
+            const insertAt = suggestClosePos(open, i);
+            issues.push({ kind: 'missing', char: closer, pos: open.pos, line: lineOf(open.pos), insertAt, message: `Missing ${closer} for ${open.char} opened on line ${lineOf(open.pos)}; probably belongs on line ${lineOf(insertAt)} (must come before ${ch} on line ${lineOf(i)})` });
+            marks.push({ from: open.pos, to: open.pos + 1, cls: 'cm-closer-open' });
+            marks.push({ from: insertAt, to: insertAt, widget: closer });
+          }
+          stack.length = idx;
+        }
+      }
+    }
+    i++;
+  }
+
+  if (prose) {
+    const paragraphs = text.split(/\n\s*\n/);
+    let offset = 0;
+    for (const para of paragraphs) {
+      const count = (para.match(/"/g) || []).length;
+      if (count % 2 === 1) {
+        const last = offset + para.lastIndexOf('"');
+        issues.push({ kind: 'quote', char: '"', pos: last, line: lineOf(last), message: `Odd number of double quotes in the paragraph ending on line ${lineOf(last)}` });
+        marks.push({ from: last, to: last + 1, cls: 'cm-closer-open' });
+      }
+      offset += para.length;
+      const sepMatch = /\n\s*\n/.exec(text.slice(offset));
+      offset += sepMatch ? sepMatch[0].length : 0;
+    }
+  }
+
+  for (const open of stack) {
+    const closer = CLOSER_PAIRS[open.char];
+    const insertAt = suggestClosePos(open, null);
+    issues.push({ kind: 'missing', char: closer, pos: open.pos, line: lineOf(open.pos), insertAt, message: `Unclosed ${open.char} opened on line ${lineOf(open.pos)}; ${closer} probably belongs at the end of line ${lineOf(insertAt)}` });
+    marks.push({ from: open.pos, to: open.pos + 1, cls: 'cm-closer-open' });
+    marks.push({ from: insertAt, to: insertAt, widget: closer });
+  }
+
+  issues.sort((a, b) => a.pos - b.pos);
+  return { issues, marks };
+}
+
+class CloserHintWidget extends WidgetType {
+  constructor(ch) {
+    super();
+    this.ch = ch;
+  }
+  eq(other) {
+    return other.ch === this.ch;
+  }
+  toDOM() {
+    const span = document.createElement('span');
+    span.className = 'cm-closer-hint';
+    span.textContent = this.ch;
+    span.title = 'A closing ' + this.ch + ' probably belongs here';
+    return span;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+function buildCloserDecorations(view) {
+  const docLen = view.state.doc.length;
+  const sorted = [...closerMarks].filter(m => m.from <= docLen && m.to <= docLen).sort((a, b) => a.from - b.from || (a.widget ? 1 : 0) - (b.widget ? 1 : 0));
+  const builder = new RangeSetBuilder();
+  for (const m of sorted) {
+    if (m.widget) builder.add(m.from, m.from, Decoration.widget({ widget: new CloserHintWidget(m.widget), side: 1 }));
+    else if (m.to > m.from) builder.add(m.from, m.to, Decoration.mark({ class: m.cls }));
+  }
+  return builder.finish();
+}
+
+const closerPlugin = ViewPlugin.fromClass(class {
+  constructor(view) {
+    this.decorations = buildCloserDecorations(view);
+  }
+  update(update) {
+    if (update.docChanged) {
+      closerMarks = [];
+      this.decorations = Decoration.none;
+      const status = document.getElementById('closer-status');
+      if (closerIssues.length && status && !document.getElementById('closer-panel').classList.contains('hidden')) {
+        status.textContent = 'Document changed, re-check';
+      }
+    } else if (update.viewportChanged || hasRefreshEffect(update)) {
+      this.decorations = buildCloserDecorations(update.view);
+    }
+  }
+}, { decorations: v => v.decorations });
+
+let closerView = null;
+
+function runCloserCheck() {
+  const target = statusTarget();
+  const view = target.view;
+  closerView = view;
+  const checkQuotes = document.getElementById('closer-quotes').checked;
+  const { issues, marks } = closerScan(view.state.doc.toString(), target.language, checkQuotes);
+  closerIssues = issues;
+  closerMarks = marks;
+
+  document.getElementById('grammar-panel').classList.add('hidden');
+  document.getElementById('btn-grammar').classList.remove('active');
+  document.getElementById('closer-panel').classList.remove('hidden');
+  document.getElementById('btn-closers').classList.add('active');
+  document.getElementById('closer-status').textContent = issues.length === 0
+    ? 'All closers balanced'
+    : `${issues.length} issue${issues.length === 1 ? '' : 's'}`;
+
+  view.dispatch({ effects: refreshDecorations.of(null) });
+  renderCloserResults();
+}
+
+function closeCloserPanel() {
+  closerIssues = [];
+  closerMarks = [];
+  document.getElementById('closer-panel').classList.add('hidden');
+  document.getElementById('btn-closers').classList.remove('active');
+  if (closerView) closerView.dispatch({ effects: refreshDecorations.of(null) });
+}
+
+function renderCloserResults() {
+  const container = document.getElementById('closer-results');
+  container.innerHTML = '';
+  if (!closerIssues.length) {
+    container.innerHTML = '<div class="sidebar-placeholder">No missing or extra closers found.</div>';
+    return;
+  }
+  for (const issue of closerIssues) {
+    const item = document.createElement('div');
+    item.className = 'grammar-item';
+    const label = issue.kind === 'missing' ? 'missing' : issue.kind === 'extra' ? 'extra' : 'quote';
+    const cls = issue.kind === 'missing' ? 'error' : issue.kind === 'extra' ? 'typo' : 'style';
+    item.innerHTML = `<span class="grammar-item-type ${cls}">${label.toUpperCase()}</span>`
+      + `<div class="grammar-item-body"><div class="grammar-item-message">${escapeHtml(issue.message)}</div></div>`
+      + (issue.kind === 'missing' ? `<button class="grammar-item-fix">Insert ${escapeHtml(issue.char)}</button>` : '');
+    item.addEventListener('click', (e) => {
+      if (e.target.classList.contains('grammar-item-fix')) return;
+      jumpToPos(closerView, issue.pos);
+    });
+    const fix = item.querySelector('.grammar-item-fix');
+    if (fix) {
+      fix.addEventListener('click', () => {
+        const pos = Math.min(issue.insertAt, closerView.state.doc.length);
+        closerView.dispatch({ changes: { from: pos, to: pos, insert: issue.char }, selection: { anchor: pos + 1 } });
+        closerView.focus();
+        runCloserCheck();
+      });
+    }
+    container.appendChild(item);
+  }
+}
+
+function jumpToPos(view, pos) {
+  if (!view) return;
+  const p = Math.min(pos, view.state.doc.length);
+  view.dispatch({ selection: { anchor: p, head: Math.min(p + 1, view.state.doc.length) }, effects: EditorView.scrollIntoView(p, { y: 'center' }) });
+  view.focus();
+}
+
 function bookmarkLines(state) {
   const lines = new Set();
   const iter = state.field(bookmarkField).iter();
@@ -692,6 +1215,7 @@ function applyEditorSettings() {
       themeCompartment.reconfigure(isDarkTheme ? oneDark : []),
       whitespaceCompartment.reconfigure(whitespaceExt()),
       eolCompartment.reconfigure(showEol ? eolMarkerPlugin(mainEolLabel) : []),
+      changeHistoryCompartment.reconfigure(showChangeHistory ? changeHistoryGutter : []),
     ],
   });
 }
@@ -1611,6 +2135,7 @@ function markTabSaved(tab, content) {
   tab.savedEol = tab.eol;
   tab.savedEncoding = tab.encoding;
   tab.modified = false;
+  markTabHistorySaved(tab);
   renderTabs();
   updateStatusBar();
 }
@@ -1751,6 +2276,8 @@ function doRedo() {
 function mainExtensions() {
   return [
     ...bookmarkExtensions(),
+    ...changeHistoryExtensions(changeHistoryCompartment),
+    closerPlugin,
     lineNumbers(),
     highlightActiveLineGutter(),
     highlightSpecialChars(),
@@ -2021,6 +2548,8 @@ function closeGrammarPanel() {
 }
 
 async function runGrammarCheck() {
+  document.getElementById('closer-panel').classList.add('hidden');
+  document.getElementById('btn-closers').classList.remove('active');
   if (!window.electronAPI || !window.electronAPI.checkGrammar) return;
 
   const text = getCurrentContent();
@@ -2320,6 +2849,7 @@ function collectSettings() {
     minimapVisible,
     showWhitespace,
     showEol,
+    showChangeHistory,
   };
 }
 
@@ -2345,6 +2875,7 @@ function applySettings(s) {
   if (s.minimapVisible && !minimapVisible) toggleMinimap();
   if (s.showWhitespace && !showWhitespace) toggleShowWhitespace();
   if (s.showEol && !showEol) toggleShowEol();
+  if (s.showChangeHistory === false && showChangeHistory) toggleChangeHistory();
 }
 
 function applyPaneThemes() {
@@ -2965,6 +3496,7 @@ async function saveSplitFile(opts = {}) {
   splitSavedEol = splitEol;
   splitSavedEncoding = splitEncoding;
   splitModified = false;
+  splitEditorView.dispatch({ effects: markSavedEffect.of(null) });
   updateStatusBar();
   return true;
 }
@@ -2988,7 +3520,7 @@ async function saveSplitFileAs() {
   splitModified = false;
   splitLanguage = detectLanguageKey(splitFilePath, content);
   splitEditorView.dispatch({
-    effects: splitLanguageCompartment.reconfigure(languageExtensionFor(splitLanguage)),
+    effects: [splitLanguageCompartment.reconfigure(languageExtensionFor(splitLanguage)), markSavedEffect.of(null)],
   });
   updateStatusBar();
   return true;
@@ -3024,6 +3556,8 @@ function createSplitEditor(content, langExt, mode) {
 
   const extensions = [
     ...bookmarkExtensions(),
+    ...changeHistoryExtensions(splitChangeHistoryCompartment),
+    closerPlugin,
     lineNumbers(),
     highlightActiveLineGutter(),
     highlightSpecialChars(),
@@ -3510,6 +4044,9 @@ const commands = {
   'set-language': (key) => setLanguage(key),
   'rename': () => showRenameDialog(null),
   'print': () => printCurrent(),
+  'column-editor': () => showColumnEditor(),
+  'change-history': (action) => changeHistoryCommand(action),
+  'check-closers': () => runCloserCheck(),
   'find': () => openFind(),
   'replace': () => openFind(),
   'find-in-files': () => showFindInFiles(),
@@ -3699,6 +4236,9 @@ function wireEvents() {
   });
   document.getElementById('btn-grammar').addEventListener('click', runGrammarCheck);
   document.getElementById('grammar-close').addEventListener('click', closeGrammarPanel);
+  document.getElementById('btn-closers').addEventListener('click', runCloserCheck);
+  document.getElementById('closer-close').addEventListener('click', closeCloserPanel);
+  document.getElementById('closer-rerun').addEventListener('click', runCloserCheck);
   document.getElementById('btn-minimap').addEventListener('click', toggleMinimap);
   document.getElementById('btn-sidebar-toggle').addEventListener('click', toggleSidebar);
 
@@ -3826,6 +4366,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initTabShortcuts();
   initFindInFiles();
   initRenameDialog();
+  initColumnEditor();
   initMinimap();
   loadRecentFiles();
 });

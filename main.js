@@ -374,6 +374,7 @@ function buildMenu() {
             cmd('Toggle Block Comment', 'toggle-block-comment', { accelerator: 'Shift+Alt+A', registerAccelerator: false }),
           ],
         },
+        cmd('Column Editor...', 'column-editor', { accelerator: 'Alt+C' }),
         {
           label: 'EOL Conversion',
           submenu: [
@@ -408,6 +409,18 @@ function buildMenu() {
             cmd('Inverse Bookmark', 'bookmark', { arg: 'inverse' }),
           ],
         },
+        {
+          label: 'Change History',
+          submenu: [
+            cmd('Go to Next Change', 'change-history', { arg: 'next' }),
+            cmd('Go to Previous Change', 'change-history', { arg: 'prev' }),
+            cmd('Clear Change History', 'change-history', { arg: 'clear' }),
+            { type: 'separator' },
+            cmd('Toggle Change History Margin', 'change-history', { arg: 'toggle' }),
+          ],
+        },
+        { type: 'separator' },
+        cmd('Check Closers (Brackets and Quotes)...', 'check-closers', { accelerator: 'CmdOrCtrl+Shift+K' }),
       ],
     },
     {
