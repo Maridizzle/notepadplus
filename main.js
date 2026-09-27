@@ -5,6 +5,8 @@ const fs = require('fs');
 let mainWindow;
 let recentFiles = [];
 const MAX_RECENT = 15;
+let rendererReady = false;
+let closeConfirmed = false;
 
 const sessionFile = path.join(app.getPath('userData'), 'session.json');
 
@@ -66,10 +68,21 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
 
   mainWindow.webContents.on('did-finish-load', () => {
+    rendererReady = true;
     const session = loadSession();
     if (session && session.tabs && session.tabs.length > 0) {
       mainWindow.webContents.send('restore-session', session);
     }
+  });
+
+  mainWindow.on('close', (event) => {
+    if (closeConfirmed || !rendererReady) return;
+    event.preventDefault();
+    mainWindow.webContents.send('request-close');
+  });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
   });
 
   const menu = Menu.buildFromTemplate([
@@ -439,6 +452,22 @@ ipcMain.handle('set-title', async (event, { title }) => {
 
 ipcMain.on('save-session', (event, data) => {
   saveSession(data);
+});
+
+ipcMain.handle('confirm-close', async (event, { message }) => {
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    buttons: ['Save', "Don't Save", 'Cancel'],
+    defaultId: 0,
+    cancelId: 2,
+    message,
+  });
+  return result.response;
+});
+
+ipcMain.on('close-confirmed', () => {
+  closeConfirmed = true;
+  if (mainWindow) mainWindow.close();
 });
 
 app.whenReady().then(createWindow);

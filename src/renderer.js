@@ -51,6 +51,7 @@ const LANGUAGES = {
 
 const languageCompartment = new Compartment();
 const wrapCompartment = new Compartment();
+const splitLanguageCompartment = new Compartment();
 const splitWrapCompartment = new Compartment();
 const splitFontCompartment = new Compartment();
 
@@ -63,13 +64,49 @@ let currentFolderPath = null;
 let autoSaveTimer = null;
 const AUTO_SAVE_DELAY = 2000;
 let wordWrap = false;
-let leftBgColor = '#282c34';
-let rightBgColor = '#282c34';
-let proseBgColor = '#282c34';
+let currentFontFamily = null;
+let leftBgColor = null;
+let rightBgColor = null;
+let proseBgColor = null;
 let focusedPane = 'left';
-let switchingTabs = false;
 
 const fontCompartment = new Compartment();
+
+function paneTheme(fontFamily, bgColor) {
+  const spec = {};
+  if (fontFamily) spec['.cm-content, .cm-gutters'] = { fontFamily };
+  if (bgColor) {
+    spec['&'] = { backgroundColor: bgColor };
+    spec['.cm-gutters'] = { backgroundColor: bgColor };
+  }
+  return Object.keys(spec).length ? EditorView.theme(spec) : [];
+}
+
+const DEFAULT_EOL = '\r\n';
+
+function detectEol(raw) {
+  const m = /\r\n|\r|\n/.exec(raw);
+  return m ? m[0] : DEFAULT_EOL;
+}
+
+function normalizeNewlines(raw) {
+  return raw.replace(/\r\n?/g, '\n');
+}
+
+function getCurrentContent() {
+  return proseMode
+    ? document.getElementById('prose-editor').value
+    : editorView.state.doc.toString();
+}
+
+function syncProseToEditor() {
+  const text = document.getElementById('prose-editor').value;
+  if (text !== editorView.state.doc.toString()) {
+    editorView.dispatch({
+      changes: { from: 0, to: editorView.state.doc.length, insert: text },
+    });
+  }
+}
 
 const wikiLinkMark = Decoration.mark({ class: 'cm-wiki-link' });
 const wikiBracketMark = Decoration.mark({ class: 'cm-wiki-bracket' });
@@ -155,21 +192,47 @@ function getLanguageExtension(filePath) {
   return [ext];
 }
 
-function createTab(filePath, content) {
+function createTab(filePath, rawContent, opts = {}) {
   const id = ++tabCounter;
+  const content = normalizeNewlines(rawContent || '');
   const tab = {
     id,
     filePath,
-    content: content || '',
-    savedContent: content || '',
+    content,
+    savedContent: content,
     modified: false,
-    scrollPos: null,
-    cursorPos: 0,
+    eol: rawContent ? detectEol(rawContent) : DEFAULT_EOL,
+    scrollPos: opts.scrollPos || 0,
+    cursorPos: opts.cursorPos || 0,
+    state: null,
   };
+  tab.state = createTabState(tab);
   tabs.push(tab);
   renderTabs();
   switchToTab(id);
   return tab;
+}
+
+function createTabState(tab) {
+  const pos = Math.min(tab.cursorPos, tab.content.length);
+  return EditorState.create({
+    doc: tab.content,
+    selection: { anchor: pos },
+    extensions: [
+      ...mainExtensions(),
+      languageCompartment.of(getLanguageExtension(tab.filePath)),
+    ],
+  });
+}
+
+function applyEditorSettings() {
+  editorView.dispatch({
+    effects: [
+      wrapCompartment.reconfigure(wordWrap ? EditorView.lineWrapping : []),
+      fontCompartment.reconfigure(paneTheme(currentFontFamily, leftBgColor)),
+      themeCompartment.reconfigure(isDarkTheme ? oneDark : []),
+    ],
+  });
 }
 
 function getActiveTab() {
@@ -179,11 +242,7 @@ function getActiveTab() {
 function getSessionState() {
   const currentTab = getActiveTab();
   if (currentTab && editorView) {
-    if (proseMode) {
-      currentTab.content = document.getElementById('prose-editor').value;
-    } else {
-      currentTab.content = editorView.state.doc.toString();
-    }
+    currentTab.content = getCurrentContent();
     currentTab.scrollPos = editorView.scrollDOM.scrollTop;
     currentTab.cursorPos = editorView.state.selection.main.head;
   }
@@ -208,19 +267,16 @@ async function restoreSession(session) {
   renderTabs();
 
   for (const saved of session.tabs) {
+    const opts = { cursorPos: saved.cursorPos || 0, scrollPos: saved.scrollPos || 0 };
     if (saved.filePath) {
       try {
         const result = await window.electronAPI.readFile({ filePath: saved.filePath });
         if (result.success) {
-          const tab = createTab(saved.filePath, result.content);
-          tab.cursorPos = saved.cursorPos || 0;
-          tab.scrollPos = saved.scrollPos || 0;
+          createTab(saved.filePath, result.content, opts);
         }
       } catch (e) {}
     } else if (saved.content) {
-      const tab = createTab(null, saved.content);
-      tab.cursorPos = saved.cursorPos || 0;
-      tab.scrollPos = saved.scrollPos || 0;
+      createTab(null, saved.content, opts);
     }
   }
 
@@ -235,11 +291,9 @@ async function restoreSession(session) {
 function switchToTab(id) {
   const currentTab = getActiveTab();
   if (currentTab && editorView) {
-    if (proseMode) {
-      currentTab.content = document.getElementById('prose-editor').value;
-    } else {
-      currentTab.content = editorView.state.doc.toString();
-    }
+    if (proseMode) syncProseToEditor();
+    currentTab.state = editorView.state;
+    currentTab.content = editorView.state.doc.toString();
     currentTab.scrollPos = editorView.scrollDOM.scrollTop;
     currentTab.cursorPos = editorView.state.selection.main.head;
   }
@@ -248,42 +302,41 @@ function switchToTab(id) {
   const tab = getActiveTab();
   if (!tab) return;
 
-  switchingTabs = true;
-
-  const langExt = getLanguageExtension(tab.filePath);
-  editorView.dispatch({
-    changes: { from: 0, to: editorView.state.doc.length, insert: tab.content },
-  });
-
-  editorView.dispatch({
-    effects: languageCompartment.reconfigure(langExt),
-  });
+  editorView.setState(tab.state);
+  applyEditorSettings();
+  editorView.scrollDOM.scrollTop = tab.scrollPos || 0;
 
   if (proseMode) {
     document.getElementById('prose-editor').value = tab.content;
+    document.getElementById('prose-editor').focus();
+  } else {
+    editorView.focus();
   }
 
-  if (tab.scrollPos !== null) {
-    editorView.scrollDOM.scrollTop = tab.scrollPos;
-  }
-
-  try {
-    const pos = Math.min(tab.cursorPos, editorView.state.doc.length);
-    editorView.dispatch({
-      selection: { anchor: pos },
-    });
-  } catch (e) {
-    // ignore position errors
-  }
-
-  switchingTabs = false;
-
-  editorView.focus();
+  refreshSplitClone();
+  if (minimapVisible) requestAnimationFrame(renderMinimap);
   updateStatusBar();
   renderTabs();
 }
 
-function closeTab(id) {
+async function confirmDiscard(message) {
+  if (!window.electronAPI || !window.electronAPI.confirmClose) return 1;
+  return window.electronAPI.confirmClose({ message });
+}
+
+async function closeTab(id) {
+  const tab = tabs.find(t => t.id === id);
+  if (!tab) return;
+
+  if (tab.modified) {
+    const choice = await confirmDiscard(`Save changes to ${getFileName(tab.filePath)}?`);
+    if (choice === 2) return;
+    if (choice === 0) {
+      const ok = await saveTab(tab);
+      if (!ok) return;
+    }
+  }
+
   const idx = tabs.findIndex(t => t.id === id);
   if (idx < 0) return;
 
@@ -353,6 +406,8 @@ function updateStatusBar() {
   const lang = getLanguageForFile(tab.filePath);
   document.getElementById('status-lang').textContent = lang.name;
   document.getElementById('status-encoding').textContent = 'UTF-8';
+  document.getElementById('status-eol').textContent =
+    tab.eol === '\r\n' ? 'CRLF' : tab.eol === '\r' ? 'CR' : 'LF';
 
   if (editorView) {
     const pos = editorView.state.selection.main.head;
@@ -376,10 +431,9 @@ function updateStatusBar() {
 }
 
 function markModified() {
-  if (switchingTabs) return;
   const tab = getActiveTab();
   if (!tab) return;
-  const currentContent = editorView.state.doc.toString();
+  const currentContent = getCurrentContent();
   tab.content = currentContent;
   tab.modified = currentContent !== tab.savedContent;
   renderTabs();
@@ -389,47 +443,58 @@ function markModified() {
   }
 }
 
+function tabContent(tab) {
+  return tab.id === activeTabId ? getCurrentContent() : tab.content;
+}
+
+function markTabSaved(tab, content) {
+  tab.content = content;
+  tab.savedContent = content;
+  tab.modified = false;
+  renderTabs();
+  updateStatusBar();
+}
+
+async function saveTab(tab) {
+  if (!tab || !window.electronAPI) return false;
+  if (!tab.filePath) return saveTabAs(tab);
+
+  const content = tabContent(tab);
+  const result = await window.electronAPI.saveFile({
+    filePath: tab.filePath,
+    content: content.replace(/\n/g, tab.eol),
+  });
+  if (!result.success) return false;
+  markTabSaved(tab, content);
+  return true;
+}
+
+async function saveTabAs(tab) {
+  if (!tab || !window.electronAPI) return false;
+
+  const content = tabContent(tab);
+  const result = await window.electronAPI.saveAs({
+    content: content.replace(/\n/g, tab.eol),
+    defaultPath: tab.filePath || 'untitled.txt',
+  });
+  if (!result.success) return false;
+  tab.filePath = result.filePath;
+  markTabSaved(tab, content);
+  return true;
+}
+
+function rightPaneHasFile() {
+  return focusedPane === 'right' && splitEditorView && splitFilePath && !compareMode;
+}
+
 async function saveCurrentFile() {
-  const tab = getActiveTab();
-  if (!tab) return;
-
-  const content = proseMode
-    ? document.getElementById('prose-editor').value
-    : editorView.state.doc.toString();
-
-  if (!tab.filePath) {
-    await saveCurrentFileAs();
-    return;
-  }
-
-  const result = await window.electronAPI.saveFile({ filePath: tab.filePath, content });
-  if (result.success) {
-    tab.savedContent = content;
-    tab.modified = false;
-    renderTabs();
-    updateStatusBar();
-  }
+  if (rightPaneHasFile()) return saveSplitFile();
+  return saveTab(getActiveTab());
 }
 
 async function saveCurrentFileAs() {
-  const tab = getActiveTab();
-  if (!tab) return;
-
-  const content = proseMode
-    ? document.getElementById('prose-editor').value
-    : editorView.state.doc.toString();
-  const result = await window.electronAPI.saveAs({
-    content,
-    defaultPath: tab.filePath || 'untitled.txt',
-  });
-
-  if (result.success) {
-    tab.filePath = result.filePath;
-    tab.savedContent = content;
-    tab.modified = false;
-    renderTabs();
-    updateStatusBar();
-  }
+  if (rightPaneHasFile()) return saveSplitFileAs();
+  return saveTabAs(getActiveTab());
 }
 
 function setFontSize(size) {
@@ -437,68 +502,70 @@ function setFontSize(size) {
   document.querySelector('.cm-editor').style.fontSize = fontSize + 'px';
 }
 
+function mainExtensions() {
+  return [
+    lineNumbers(),
+    highlightActiveLineGutter(),
+    highlightSpecialChars(),
+    history(),
+    foldGutter(),
+    drawSelection(),
+    dropCursor(),
+    EditorState.allowMultipleSelections.of(true),
+    indentOnInput(),
+    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    bracketMatching(),
+    closeBrackets(),
+    autocompletion(),
+    rectangularSelection(),
+    crosshairCursor(),
+    highlightActiveLine(),
+    highlightSelectionMatches(),
+    wrapCompartment.of(wordWrap ? EditorView.lineWrapping : []),
+    fontCompartment.of(paneTheme(currentFontFamily, leftBgColor)),
+    wikiLinkPlugin,
+    grammarPlugin,
+    comparePluginLeft,
+    themeCompartment.of(isDarkTheme ? oneDark : []),
+    keymap.of([
+      ...closeBracketsKeymap,
+      ...defaultKeymap,
+      ...searchKeymap,
+      ...historyKeymap,
+      ...foldKeymap,
+      ...completionKeymap,
+      indentWithTab,
+    ]),
+    EditorView.updateListener.of((update) => {
+      if (update.docChanged) {
+        markModified();
+        mirrorChanges(splitEditorView, update);
+        if (minimapVisible) requestAnimationFrame(renderMinimap);
+      }
+      if (update.selectionSet || update.docChanged) {
+        updateStatusBar();
+      }
+    }),
+    EditorView.domEventHandlers({
+      drop(e) {
+        if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+          e.preventDefault();
+          return true;
+        }
+        return false;
+      },
+    }),
+  ];
+}
+
 function initEditor() {
   const editorEl = document.getElementById('editor');
 
-  const state = EditorState.create({
-    doc: '',
-    extensions: [
-      lineNumbers(),
-      highlightActiveLineGutter(),
-      highlightSpecialChars(),
-      history(),
-      foldGutter(),
-      drawSelection(),
-      dropCursor(),
-      EditorState.allowMultipleSelections.of(true),
-      indentOnInput(),
-      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-      bracketMatching(),
-      closeBrackets(),
-      autocompletion(),
-      rectangularSelection(),
-      crosshairCursor(),
-      highlightActiveLine(),
-      highlightSelectionMatches(),
-      languageCompartment.of([]),
-      wrapCompartment.of([]),
-      fontCompartment.of([]),
-      wikiLinkPlugin,
-      grammarPlugin,
-      comparePluginLeft,
-      themeCompartment.of(oneDark),
-      keymap.of([
-        ...closeBracketsKeymap,
-        ...defaultKeymap,
-        ...searchKeymap,
-        ...historyKeymap,
-        ...foldKeymap,
-        ...completionKeymap,
-        indentWithTab,
-      ]),
-      EditorView.updateListener.of((update) => {
-        if (update.docChanged) {
-          markModified();
-          if (minimapVisible) requestAnimationFrame(renderMinimap);
-        }
-        if (update.selectionSet || update.docChanged) {
-          updateStatusBar();
-        }
-      }),
-      EditorView.domEventHandlers({
-        drop(e) {
-          if (e.dataTransfer && e.dataTransfer.files.length > 0) {
-            e.preventDefault();
-            return true;
-          }
-          return false;
-        },
-      }),
-    ],
-  });
-
   editorView = new EditorView({
-    state,
+    state: EditorState.create({
+      doc: '',
+      extensions: [...mainExtensions(), languageCompartment.of([])],
+    }),
     parent: editorEl,
   });
 
@@ -592,17 +659,7 @@ function scheduleAutoSave() {
   autoSaveTimer = setTimeout(async () => {
     const tab = getActiveTab();
     if (!tab || !tab.filePath || !tab.modified) return;
-    if (!window.electronAPI) return;
-
-    const content = editorView.state.doc.toString();
-    const result = await window.electronAPI.saveFile({ filePath: tab.filePath, content });
-    if (result.success) {
-      tab.savedContent = content;
-      tab.modified = false;
-      renderTabs();
-      updateStatusBar();
-      flashAutoSaveIndicator();
-    }
+    if (await saveTab(tab)) flashAutoSaveIndicator();
   }, AUTO_SAVE_DELAY);
 }
 
@@ -920,8 +977,8 @@ function toggleProseMode() {
     proseEl.value = editorView.state.doc.toString();
     editorEl.classList.add('hidden');
     proseEl.classList.remove('hidden');
-    proseEl.style.fontFamily = document.getElementById('font-select').value;
-    proseEl.style.background = proseBgColor;
+    proseEl.style.fontFamily = currentFontFamily || '';
+    proseEl.style.background = proseBgColor || '';
     if (wordWrap) {
       proseEl.style.whiteSpace = 'pre-wrap';
       proseEl.style.overflowWrap = 'break-word';
@@ -930,10 +987,7 @@ function toggleProseMode() {
     focusedPane = 'prose';
     btn.classList.add('active');
   } else {
-    const content = proseEl.value;
-    editorView.dispatch({
-      changes: { from: 0, to: editorView.state.doc.length, insert: content },
-    });
+    syncProseToEditor();
     proseEl.classList.add('hidden');
     editorEl.classList.remove('hidden');
     editorView.focus();
@@ -942,60 +996,33 @@ function toggleProseMode() {
   }
 }
 
-function setEditorFont(fontFamily) {
+function applyPaneThemes() {
   editorView.dispatch({
-    effects: fontCompartment.reconfigure(
-      EditorView.theme({
-        '.cm-content, .cm-gutters': { fontFamily },
-        '&': { backgroundColor: leftBgColor },
-        '.cm-gutters': { backgroundColor: leftBgColor },
-      })
-    ),
+    effects: fontCompartment.reconfigure(paneTheme(currentFontFamily, leftBgColor)),
   });
   if (splitEditorView) {
     splitEditorView.dispatch({
-      effects: splitFontCompartment.reconfigure(
-        EditorView.theme({
-          '.cm-content, .cm-gutters': { fontFamily },
-          '&': { backgroundColor: rightBgColor },
-          '.cm-gutters': { backgroundColor: rightBgColor },
-        })
-      ),
+      effects: splitFontCompartment.reconfigure(paneTheme(currentFontFamily, rightBgColor)),
     });
   }
-  const proseEl = document.getElementById('prose-editor');
-  proseEl.style.fontFamily = fontFamily;
+}
+
+function setEditorFont(fontFamily) {
+  currentFontFamily = fontFamily;
+  applyPaneThemes();
+  document.getElementById('prose-editor').style.fontFamily = fontFamily;
 }
 
 function setEditorBackground(color) {
-  const fontFamily = document.getElementById('font-select').value;
-
   if (focusedPane === 'right' && splitEditorView) {
     rightBgColor = color;
-    splitEditorView.dispatch({
-      effects: splitFontCompartment.reconfigure(
-        EditorView.theme({
-          '.cm-content, .cm-gutters': { fontFamily },
-          '&': { backgroundColor: color },
-          '.cm-gutters': { backgroundColor: color },
-        })
-      ),
-    });
   } else if (focusedPane === 'prose') {
     proseBgColor = color;
     document.getElementById('prose-editor').style.background = color;
   } else {
     leftBgColor = color;
-    editorView.dispatch({
-      effects: fontCompartment.reconfigure(
-        EditorView.theme({
-          '.cm-content, .cm-gutters': { fontFamily },
-          '&': { backgroundColor: color },
-          '.cm-gutters': { backgroundColor: color },
-        })
-      ),
-    });
   }
+  applyPaneThemes();
   document.getElementById('bg-color').value = color;
 }
 
@@ -1384,10 +1411,100 @@ function lineOperation(type) {
 let splitView = false;
 let splitEditorView = null;
 let splitFilePath = null;
+let splitEol = DEFAULT_EOL;
+let splitSavedContent = '';
+let splitModified = false;
+let splitAutoSaveTimer = null;
+let syncingSplit = false;
 let compareMode = false;
 
-function createSplitEditor(content, langExt, readOnly, syncToMain) {
+function mirrorChanges(target, update) {
+  if (syncingSplit || !target || compareMode || splitFilePath) return;
+  syncingSplit = true;
+  try {
+    target.dispatch({ changes: update.changes });
+  } catch (e) {
+    target.dispatch({
+      changes: { from: 0, to: target.state.doc.length, insert: update.state.doc.toString() },
+    });
+  } finally {
+    syncingSplit = false;
+  }
+}
+
+function refreshSplitClone() {
+  if (!splitEditorView || compareMode || splitFilePath) return;
+  const tab = getActiveTab();
+  if (!tab) return;
+  syncingSplit = true;
+  try {
+    splitEditorView.dispatch({
+      changes: { from: 0, to: splitEditorView.state.doc.length, insert: editorView.state.doc.toString() },
+      effects: splitLanguageCompartment.reconfigure(getLanguageExtension(tab.filePath)),
+    });
+  } finally {
+    syncingSplit = false;
+  }
+}
+
+function scheduleSplitAutoSave() {
+  if (splitAutoSaveTimer) clearTimeout(splitAutoSaveTimer);
+  splitAutoSaveTimer = setTimeout(async () => {
+    if (!splitEditorView || !splitFilePath || !splitModified) return;
+    if (await saveSplitFile()) flashAutoSaveIndicator();
+  }, AUTO_SAVE_DELAY);
+}
+
+async function saveSplitFile() {
+  if (!splitEditorView || !splitFilePath || !window.electronAPI) return false;
+  const content = splitEditorView.state.doc.toString();
+  const result = await window.electronAPI.saveFile({
+    filePath: splitFilePath,
+    content: content.replace(/\n/g, splitEol),
+  });
+  if (!result.success) return false;
+  splitSavedContent = content;
+  splitModified = false;
+  return true;
+}
+
+async function saveSplitFileAs() {
+  if (!splitEditorView || !window.electronAPI) return false;
+  const content = splitEditorView.state.doc.toString();
+  const result = await window.electronAPI.saveAs({
+    content: content.replace(/\n/g, splitEol),
+    defaultPath: splitFilePath || 'untitled.txt',
+  });
+  if (!result.success) return false;
+  splitFilePath = result.filePath;
+  splitSavedContent = content;
+  splitModified = false;
+  return true;
+}
+
+async function confirmDiscardSplit() {
+  if (!splitModified || !splitFilePath) return true;
+  const choice = await confirmDiscard(`Save changes to ${getFileName(splitFilePath)}?`);
+  if (choice === 2) return false;
+  if (choice === 0) return saveSplitFile();
+  return true;
+}
+
+function destroySplitEditor() {
+  if (splitAutoSaveTimer) clearTimeout(splitAutoSaveTimer);
+  splitAutoSaveTimer = null;
+  if (splitEditorView) {
+    splitEditorView.destroy();
+    splitEditorView = null;
+  }
+  splitFilePath = null;
+  splitModified = false;
+  splitSavedContent = '';
+}
+
+function createSplitEditor(content, langExt, mode) {
   const splitEl = document.getElementById('editor-split');
+  destroySplitEditor();
   splitEl.innerHTML = '';
 
   const extensions = [
@@ -1408,9 +1525,9 @@ function createSplitEditor(content, langExt, readOnly, syncToMain) {
     crosshairCursor(),
     highlightActiveLine(),
     highlightSelectionMatches(),
-    languageCompartment.of(langExt),
+    splitLanguageCompartment.of(langExt),
     splitWrapCompartment.of(wordWrap ? EditorView.lineWrapping : []),
-    splitFontCompartment.of([]),
+    splitFontCompartment.of(paneTheme(currentFontFamily, rightBgColor)),
     wikiLinkPlugin,
     ViewPlugin.fromClass(class {
       constructor(view) {
@@ -1422,7 +1539,7 @@ function createSplitEditor(content, langExt, readOnly, syncToMain) {
         }
       }
     }, { decorations: v => v.decorations }),
-    isDarkTheme ? oneDark : [],
+    splitThemeCompartment.of(isDarkTheme ? oneDark : []),
     keymap.of([
       ...closeBracketsKeymap,
       ...defaultKeymap,
@@ -1443,20 +1560,20 @@ function createSplitEditor(content, langExt, readOnly, syncToMain) {
     }),
   ];
 
-  if (readOnly) {
+  if (mode === 'compare') {
     extensions.push(EditorState.readOnly.of(true));
-  } else if (syncToMain !== false) {
+  } else if (mode === 'file') {
     extensions.push(
       EditorView.updateListener.of((update) => {
-        if (update.docChanged && !compareMode) {
-          const mainDoc = editorView.state.doc.toString();
-          const splitDoc = splitEditorView.state.doc.toString();
-          if (mainDoc !== splitDoc) {
-            editorView.dispatch({
-              changes: { from: 0, to: editorView.state.doc.length, insert: splitDoc },
-            });
-          }
-        }
+        if (!update.docChanged) return;
+        splitModified = update.state.doc.toString() !== splitSavedContent;
+        if (splitModified) scheduleSplitAutoSave();
+      })
+    );
+  } else {
+    extensions.push(
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) mirrorChanges(editorView, update);
       })
     );
   }
@@ -1471,68 +1588,64 @@ function createSplitEditor(content, langExt, readOnly, syncToMain) {
   return splitEditorView;
 }
 
-function toggleSplitView() {
+function showSplitLayout() {
+  splitView = true;
+  document.getElementById('editor-area').classList.add('split-view');
+  if (proseMode) {
+    document.getElementById('prose-editor').style.width = '50%';
+  } else {
+    document.getElementById('editor').style.width = '50%';
+  }
+}
+
+function hideSplitLayout() {
+  splitView = false;
+  document.getElementById('editor-area').classList.remove('split-view');
+  document.getElementById('editor').style.width = '';
+  document.getElementById('prose-editor').style.width = '';
+  destroySplitEditor();
+  if (focusedPane === 'right') focusedPane = proseMode ? 'prose' : 'left';
+}
+
+async function toggleSplitView() {
   if (compareMode) {
     closeCompare();
     return;
   }
 
-  splitView = !splitView;
-  const editorArea = document.getElementById('editor-area');
-  const editorEl = document.getElementById('editor');
-  const proseEl = document.getElementById('prose-editor');
-
   if (splitView) {
-    editorArea.classList.add('split-view');
-    if (proseMode) {
-      proseEl.style.width = '50%';
-    } else {
-      editorEl.style.width = '50%';
-    }
-    if (!splitEditorView) {
-      const tab = getActiveTab();
-      const content = tab ? tab.content : '';
-      const langExt = tab ? getLanguageExtension(tab.filePath) : [];
-      createSplitEditor(content, langExt, false);
-    }
-  } else {
-    editorArea.classList.remove('split-view');
-    editorEl.style.width = '';
-    proseEl.style.width = '';
-    if (splitEditorView) {
-      splitEditorView.destroy();
-      splitEditorView = null;
-    }
-    splitFilePath = null;
+    if (!(await confirmDiscardSplit())) return;
+    hideSplitLayout();
+    return;
+  }
+
+  showSplitLayout();
+  if (!splitEditorView) {
+    const tab = getActiveTab();
+    const content = editorView.state.doc.toString();
+    const langExt = tab ? getLanguageExtension(tab.filePath) : [];
+    createSplitEditor(content, langExt, 'clone');
   }
 }
 
 async function loadFileIntoSplitPane(filePath) {
   if (!window.electronAPI) return;
+  if (compareMode) closeCompare();
+  if (!(await confirmDiscardSplit())) return;
+
   const result = await window.electronAPI.readFile({ filePath });
   if (!result.success) return;
   await window.electronAPI.trackRecentFile({ filePath });
 
-  if (!splitView) {
-    splitView = true;
-    const editorArea = document.getElementById('editor-area');
-    const editorEl = document.getElementById('editor');
-    const proseEl = document.getElementById('prose-editor');
-    editorArea.classList.add('split-view');
-    if (proseMode) {
-      proseEl.style.width = '50%';
-    } else {
-      editorEl.style.width = '50%';
-    }
-  }
+  if (!splitView) showSplitLayout();
 
-  const langExt = getLanguageExtension(filePath);
-  if (splitEditorView) {
-    splitEditorView.destroy();
-    splitEditorView = null;
-  }
+  const content = normalizeNewlines(result.content);
+  createSplitEditor(content, getLanguageExtension(filePath), 'file');
   splitFilePath = filePath;
-  createSplitEditor(result.content, langExt, false, false);
+  splitEol = detectEol(result.content);
+  splitSavedContent = content;
+  splitModified = false;
+  splitEditorView.focus();
 }
 
 function initSplitGutter() {
@@ -1574,25 +1687,23 @@ function openCompare() {
   window.electronAPI.openFile();
 }
 
-function startCompare(rightPath, rightContent) {
+async function startCompare(rightPath, rightContent) {
+  if (!(await confirmDiscardSplit())) return;
+
   const tab = getActiveTab();
   const leftContent = editorView.state.doc.toString();
   const leftName = tab && tab.filePath ? getFileName(tab.filePath) : 'Untitled';
   const rightName = getFileName(rightPath);
 
   compareMode = true;
-  splitView = true;
-
-  const editorArea = document.getElementById('editor-area');
-  editorArea.classList.add('split-view');
-  document.getElementById('editor').style.width = '50%';
+  showSplitLayout();
 
   computeCompareRanges(leftContent, rightContent);
 
   editorView.dispatch({ effects: [] });
 
   const langExt = getLanguageExtension(rightPath);
-  createSplitEditor(rightContent, langExt, true);
+  createSplitEditor(rightContent, langExt, 'compare');
 
   document.getElementById('compare-left-name').textContent = leftName;
   document.getElementById('compare-right-name').textContent = rightName;
@@ -1666,21 +1777,13 @@ function syncCompareScroll() {
 
 function closeCompare() {
   compareMode = false;
-  splitView = false;
 
   leftCompareRanges = [];
   rightCompareRanges = [];
 
   editorView.dispatch({ effects: [] });
 
-  const editorArea = document.getElementById('editor-area');
-  editorArea.classList.remove('split-view');
-  document.getElementById('editor').style.width = '';
-
-  if (splitEditorView) {
-    splitEditorView.destroy();
-    splitEditorView = null;
-  }
+  hideSplitLayout();
 
   document.getElementById('compare-bar').classList.add('hidden');
 }
@@ -1688,6 +1791,7 @@ function closeCompare() {
 // Theme toggle
 let isDarkTheme = true;
 const themeCompartment = new Compartment();
+const splitThemeCompartment = new Compartment();
 
 function toggleTheme() {
   isDarkTheme = !isDarkTheme;
@@ -1698,12 +1802,9 @@ function toggleTheme() {
   });
 
   if (splitEditorView) {
-    splitEditorView.destroy();
-    splitEditorView = null;
-    if (splitView) {
-      toggleSplitView();
-      toggleSplitView();
-    }
+    splitEditorView.dispatch({
+      effects: splitThemeCompartment.reconfigure(isDarkTheme ? oneDark : []),
+    });
   }
 }
 
@@ -1788,11 +1889,14 @@ function initDragAndDrop() {
     const isRight = x > rect.width / 2;
 
     for (const file of e.dataTransfer.files) {
-      if (!file.path) continue;
+      const filePath = window.electronAPI && window.electronAPI.getPathForFile
+        ? window.electronAPI.getPathForFile(file)
+        : file.path;
+      if (!filePath) continue;
       if (isRight) {
-        loadFileIntoSplitPane(file.path);
+        loadFileIntoSplitPane(filePath);
       } else {
-        openFileFromPath(file.path);
+        openFileFromPath(filePath);
       }
     }
   });
@@ -1928,6 +2032,30 @@ function wireEvents() {
 
     window.electronAPI.onRestoreSession((session) => {
       restoreSession(session);
+    });
+
+    window.electronAPI.onRequestClose(async () => {
+      const dirtyTabs = tabs.filter(t => t.modified);
+      const splitDirty = splitModified && splitFilePath && !compareMode;
+      const count = dirtyTabs.length + (splitDirty ? 1 : 0);
+
+      if (count > 0) {
+        const choice = await confirmDiscard(
+          count === 1
+            ? `Save changes to ${getFileName(dirtyTabs[0] ? dirtyTabs[0].filePath : splitFilePath)}?`
+            : `Save changes to ${count} files?`
+        );
+        if (choice === 2) return;
+        if (choice === 0) {
+          for (const tab of dirtyTabs) {
+            if (!(await saveTab(tab))) return;
+          }
+          if (splitDirty && !(await saveSplitFile())) return;
+        }
+      }
+
+      window.electronAPI.saveSession(getSessionState());
+      window.electronAPI.closeConfirmed();
     });
   }
 
