@@ -235,6 +235,78 @@ body {
   background: rgba(255, 255, 255, 0.1);
 }
 
+.tab.dragging {
+  opacity: 0.4;
+}
+
+.tab.drop-before {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.tab.drop-after {
+  box-shadow: inset -3px 0 0 var(--accent);
+}
+
+#tab-context-menu {
+  position: fixed;
+  z-index: 2000;
+  min-width: 200px;
+  padding: 4px 0;
+  background: linear-gradient(180deg, #3a413a, #333833);
+  border: 2px solid var(--char-black);
+  border-radius: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  font-size: 12px;
+  color: var(--text-primary);
+  user-select: none;
+}
+
+#tab-context-menu .ctx-item {
+  padding: 5px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#tab-context-menu .ctx-item:hover {
+  background: var(--accent);
+  color: var(--char-black);
+}
+
+#tab-context-menu .ctx-item.disabled {
+  color: var(--text-secondary);
+  cursor: default;
+  opacity: 0.6;
+}
+
+#tab-context-menu .ctx-item.disabled:hover {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+#tab-context-menu .ctx-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--char-black);
+}
+
+body.light-theme #tab-context-menu {
+  background: linear-gradient(180deg, #e8e4da, #dcd8ce);
+}
+
+.cm-eol-marker {
+  display: inline-block;
+  font-size: 0.65em;
+  line-height: 1;
+  color: var(--text-secondary);
+  border: 1px solid var(--text-secondary);
+  border-radius: 2px;
+  padding: 1px 2px;
+  margin-left: 3px;
+  opacity: 0.7;
+  vertical-align: middle;
+  pointer-events: none;
+}
+
 .tab .tab-modified {
   width: 8px;
   height: 8px;

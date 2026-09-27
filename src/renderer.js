@@ -1,6 +1,6 @@
-import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine, Decoration, ViewPlugin, WidgetType } from '@codemirror/view';
+import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, highlightWhitespace, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine, Decoration, ViewPlugin, WidgetType } from '@codemirror/view';
 import { EditorState, Compartment, RangeSetBuilder, StateEffect } from '@codemirror/state';
-import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from '@codemirror/commands';
+import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo, copyLineDown, moveLineUp, moveLineDown, toggleComment, toggleBlockComment } from '@codemirror/commands';
 import { searchKeymap, highlightSelectionMatches, openSearchPanel, closeSearchPanel } from '@codemirror/search';
 import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { foldGutter, indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldKeymap, foldAll, unfoldAll } from '@codemirror/language';
@@ -54,6 +54,108 @@ const wrapCompartment = new Compartment();
 const splitLanguageCompartment = new Compartment();
 const splitWrapCompartment = new Compartment();
 const splitFontCompartment = new Compartment();
+const whitespaceCompartment = new Compartment();
+const splitWhitespaceCompartment = new Compartment();
+const eolCompartment = new Compartment();
+const splitEolCompartment = new Compartment();
+let showWhitespace = false;
+let showEol = false;
+
+function eolLabel(eol) {
+  return eol === '\r\n' ? 'CRLF' : eol === '\r' ? 'CR' : 'LF';
+}
+
+class EolWidget extends WidgetType {
+  constructor(label) {
+    super();
+    this.label = label;
+  }
+  eq(other) {
+    return other.label === this.label;
+  }
+  toDOM() {
+    const span = document.createElement('span');
+    span.className = 'cm-eol-marker';
+    span.textContent = this.label;
+    return span;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+function eolMarkerPlugin(getLabel) {
+  return ViewPlugin.fromClass(class {
+    constructor(view) {
+      this.decorations = this.build(view);
+    }
+    update(update) {
+      if (update.docChanged || update.viewportChanged || hasRefreshEffect(update)) {
+        this.decorations = this.build(update.view);
+      }
+    }
+    build(view) {
+      const builder = new RangeSetBuilder();
+      const label = getLabel();
+      const doc = view.state.doc;
+      for (const { from, to } of view.visibleRanges) {
+        let pos = from;
+        while (pos <= to) {
+          const line = doc.lineAt(pos);
+          if (line.number < doc.lines) {
+            builder.add(line.to, line.to, Decoration.widget({ widget: new EolWidget(label), side: 1 }));
+          }
+          pos = line.to + 1;
+        }
+      }
+      return builder.finish();
+    }
+  }, { decorations: v => v.decorations });
+}
+
+function mainEolLabel() {
+  const tab = getActiveTab();
+  return eolLabel(tab ? tab.eol : DEFAULT_EOL);
+}
+
+function splitEolLabel() {
+  if (splitMode === 'file') return eolLabel(splitEol);
+  if (splitMode === 'tab') {
+    const tab = tabs.find(t => t.id === splitTabId);
+    if (tab) return eolLabel(tab.eol);
+  }
+  return mainEolLabel();
+}
+
+function whitespaceExt() {
+  return showWhitespace ? highlightWhitespace() : [];
+}
+
+function toggleShowWhitespace() {
+  showWhitespace = !showWhitespace;
+  editorView.dispatch({ effects: whitespaceCompartment.reconfigure(whitespaceExt()) });
+  if (splitEditorView) {
+    splitEditorView.dispatch({ effects: splitWhitespaceCompartment.reconfigure(whitespaceExt()) });
+  }
+}
+
+function toggleShowEol() {
+  showEol = !showEol;
+  editorView.dispatch({
+    effects: eolCompartment.reconfigure(showEol ? eolMarkerPlugin(mainEolLabel) : []),
+  });
+  if (splitEditorView) {
+    splitEditorView.dispatch({
+      effects: splitEolCompartment.reconfigure(showEol ? eolMarkerPlugin(splitEolLabel) : []),
+    });
+  }
+}
+
+function refreshEolMarkers() {
+  if (!showEol) return;
+  editorView.dispatch({ effects: refreshDecorations.of(null) });
+  if (splitEditorView) splitEditorView.dispatch({ effects: refreshDecorations.of(null) });
+}
 
 let tabs = [];
 let activeTabId = null;
@@ -210,10 +312,12 @@ function createTab(filePath, rawContent, opts = {}) {
     savedContent: content,
     modified: false,
     eol: rawContent ? detectEol(rawContent) : DEFAULT_EOL,
+    savedEol: null,
     scrollPos: opts.scrollPos || 0,
     cursorPos: opts.cursorPos || 0,
     state: null,
   };
+  tab.savedEol = tab.eol;
   tab.state = createTabState(tab);
   tabs.push(tab);
   renderTabs();
@@ -239,6 +343,8 @@ function applyEditorSettings() {
       wrapCompartment.reconfigure(wordWrap ? EditorView.lineWrapping : []),
       fontCompartment.reconfigure(paneTheme(currentFontFamily, leftBgColor)),
       themeCompartment.reconfigure(isDarkTheme ? oneDark : []),
+      whitespaceCompartment.reconfigure(whitespaceExt()),
+      eolCompartment.reconfigure(showEol ? eolMarkerPlugin(mainEolLabel) : []),
     ],
   });
 }
@@ -405,8 +511,357 @@ function renderTabs() {
         switchToTab(tab.id);
       }
     });
+    el.addEventListener('auxclick', (e) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        closeTab(tab.id);
+      }
+    });
+    el.addEventListener('contextmenu', (e) => showTabContextMenu(e, tab));
+
+    el.draggable = true;
+    el.addEventListener('dragstart', (e) => {
+      draggingTabId = tab.id;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/x-notepadplus-tab', String(tab.id));
+      el.classList.add('dragging');
+    });
+    el.addEventListener('dragend', () => {
+      draggingTabId = null;
+      el.classList.remove('dragging');
+      container.querySelectorAll('.tab').forEach(t => t.classList.remove('drop-before', 'drop-after'));
+    });
+    el.addEventListener('dragover', (e) => {
+      if (draggingTabId === null || draggingTabId === tab.id) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'move';
+      const rect = el.getBoundingClientRect();
+      const after = e.clientX > rect.left + rect.width / 2;
+      el.classList.toggle('drop-after', after);
+      el.classList.toggle('drop-before', !after);
+    });
+    el.addEventListener('dragleave', () => {
+      el.classList.remove('drop-before', 'drop-after');
+    });
+    el.addEventListener('drop', (e) => {
+      if (draggingTabId === null || draggingTabId === tab.id) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = el.getBoundingClientRect();
+      const after = e.clientX > rect.left + rect.width / 2;
+      const from = tabs.findIndex(t => t.id === draggingTabId);
+      let to = tabs.findIndex(t => t.id === tab.id);
+      if (from < 0 || to < 0) return;
+      if (after) to += 1;
+      if (from < to) to -= 1;
+      moveTab(from, to);
+      draggingTabId = null;
+    });
+
     container.appendChild(el);
   }
+}
+
+let draggingTabId = null;
+
+function moveTab(from, to) {
+  if (to < 0 || to >= tabs.length || from === to) return;
+  const [tab] = tabs.splice(from, 1);
+  tabs.splice(to, 0, tab);
+  renderTabs();
+}
+
+function tabCommand(action) {
+  const idx = tabs.findIndex(t => t.id === activeTabId);
+  if (idx < 0) return;
+  const n = tabs.length;
+  switch (action) {
+    case 'next': switchToTab(tabs[(idx + 1) % n].id); break;
+    case 'prev': switchToTab(tabs[(idx - 1 + n) % n].id); break;
+    case 'first': switchToTab(tabs[0].id); break;
+    case 'last': switchToTab(tabs[n - 1].id); break;
+    case 'move-forward': moveTab(idx, idx + 1); break;
+    case 'move-backward': moveTab(idx, idx - 1); break;
+    default:
+      if (action.startsWith('goto:')) {
+        const k = parseInt(action.slice(5), 10);
+        if (tabs[k - 1]) switchToTab(tabs[k - 1].id);
+      }
+  }
+}
+
+function hideTabContextMenu() {
+  const existing = document.getElementById('tab-context-menu');
+  if (existing) existing.remove();
+}
+
+function showTabContextMenu(e, tab) {
+  e.preventDefault();
+  hideTabContextMenu();
+
+  const dir = tab.filePath ? tab.filePath.replace(/\\/g, '/').split('/').slice(0, -1).join('/') : null;
+  const items = [
+    ['Close', () => closeTab(tab.id)],
+    ['Close All But This', () => closeTabsWhere(t => t.id !== tab.id)],
+    ['Close All to the Left', () => closeTabsWhere((t, i) => i < tabs.findIndex(x => x.id === tab.id))],
+    ['Close All to the Right', () => closeTabsWhere((t, i) => i > tabs.findIndex(x => x.id === tab.id))],
+    ['Close All', closeAllTabs],
+    null,
+    ['Save', () => saveTab(tab)],
+    ['Save As...', () => saveTabAs(tab)],
+    ['Reload from Disk', () => reloadTab(tab), !tab.filePath],
+    null,
+    ['Copy Full Path', () => copyToClipboard(tab.filePath), !tab.filePath],
+    ['Copy File Name', () => copyToClipboard(getFileName(tab.filePath)), !tab.filePath],
+    ['Copy Directory Path', () => copyToClipboard(dir), !tab.filePath],
+    ['Open Containing Folder', () => window.electronAPI.showItemInFolder({ filePath: tab.filePath }), !tab.filePath],
+  ];
+
+  const menu = document.createElement('div');
+  menu.id = 'tab-context-menu';
+  for (const item of items) {
+    if (!item) {
+      const sep = document.createElement('div');
+      sep.className = 'ctx-sep';
+      menu.appendChild(sep);
+      continue;
+    }
+    const [label, action, disabled] = item;
+    const el = document.createElement('div');
+    el.className = 'ctx-item' + (disabled ? ' disabled' : '');
+    el.textContent = label;
+    if (!disabled) {
+      el.addEventListener('click', () => {
+        hideTabContextMenu();
+        action();
+      });
+    }
+    menu.appendChild(el);
+  }
+
+  menu.style.left = e.clientX + 'px';
+  menu.style.top = e.clientY + 'px';
+  document.body.appendChild(menu);
+
+  const rect = menu.getBoundingClientRect();
+  if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width - 4) + 'px';
+  if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height - 4) + 'px';
+
+  const dismiss = (ev) => {
+    if (ev.type === 'keydown' && ev.key !== 'Escape') return;
+    if (ev.type === 'mousedown' && menu.contains(ev.target)) return;
+    hideTabContextMenu();
+    document.removeEventListener('mousedown', dismiss, true);
+    document.removeEventListener('keydown', dismiss, true);
+    window.removeEventListener('blur', dismiss);
+  };
+  document.addEventListener('mousedown', dismiss, true);
+  document.addEventListener('keydown', dismiss, true);
+  window.addEventListener('blur', dismiss);
+}
+
+function copyToClipboard(text) {
+  if (!text) return;
+  navigator.clipboard.writeText(text).catch(() => {});
+}
+
+async function closeTabsWhere(predicate) {
+  const targets = tabs.filter((t, i) => predicate(t, i)).map(t => t.id);
+  for (const id of targets) {
+    const before = tabs.length;
+    await closeTab(id);
+    if (tabs.length === before && tabs.some(t => t.id === id)) return;
+  }
+}
+
+function closeAllTabs() {
+  return closeTabsWhere(() => true);
+}
+
+async function saveAllTabs() {
+  for (const tab of tabs.filter(t => t.modified)) {
+    if (!(await saveTab(tab))) return false;
+  }
+  if (splitMode === 'file' && splitModified) return saveSplitFile();
+  return true;
+}
+
+async function saveCopyAs() {
+  const target = statusTarget();
+  const content = target.view.state.doc.toString();
+  const result = await window.electronAPI.saveAs({
+    content: content.replace(/\n/g, target.eol),
+    defaultPath: target.filePath || 'untitled.txt',
+  });
+  if (!result.success && !result.canceled) reportSaveError(result.filePath || 'file', result.error);
+}
+
+async function confirmAction(opts) {
+  if (!window.electronAPI || !window.electronAPI.confirmAction) return 0;
+  return window.electronAPI.confirmAction(opts);
+}
+
+async function reloadTab(tab) {
+  if (!tab || !tab.filePath || !window.electronAPI) return;
+  if (tab.modified) {
+    const choice = await confirmAction({
+      message: `Reload ${getFileName(tab.filePath)} from disk?`,
+      detail: 'Unsaved changes in this document will be lost.',
+      buttons: ['Reload', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+    });
+    if (choice !== 0) return;
+  }
+  const result = await window.electronAPI.readFile({ filePath: tab.filePath });
+  if (!result.success) {
+    reportSaveError(tab.filePath, result.error);
+    return;
+  }
+  if (tab.autoSaveTimer) clearTimeout(tab.autoSaveTimer);
+  const content = normalizeNewlines(result.content);
+  tab.eol = detectEol(result.content);
+  tab.savedEol = tab.eol;
+  tab.content = content;
+  tab.savedContent = content;
+  tab.modified = false;
+  tab.cursorPos = 0;
+  tab.scrollPos = 0;
+  tab.state = createTabState(tab);
+  if (tab.id === activeTabId) {
+    editorView.setState(tab.state);
+    applyEditorSettings();
+    if (proseMode) document.getElementById('prose-editor').value = content;
+    refreshSplitClone();
+  }
+  if (splitMode === 'tab' && splitTabId === tab.id && splitEditorView) {
+    syncingSplit = true;
+    try {
+      splitEditorView.dispatch({
+        changes: { from: 0, to: splitEditorView.state.doc.length, insert: content },
+      });
+    } finally {
+      syncingSplit = false;
+    }
+  }
+  renderTabs();
+  updateStatusBar();
+  refreshEolMarkers();
+}
+
+async function reloadSplitFile() {
+  if (!splitEditorView || !splitFilePath) return;
+  if (splitModified) {
+    const choice = await confirmAction({
+      message: `Reload ${getFileName(splitFilePath)} from disk?`,
+      detail: 'Unsaved changes in this document will be lost.',
+      buttons: ['Reload', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+    });
+    if (choice !== 0) return;
+  }
+  const result = await window.electronAPI.readFile({ filePath: splitFilePath });
+  if (!result.success) {
+    reportSaveError(splitFilePath, result.error);
+    return;
+  }
+  const content = normalizeNewlines(result.content);
+  splitEol = detectEol(result.content);
+  splitSavedEol = splitEol;
+  splitSavedContent = content;
+  syncingSplit = true;
+  try {
+    splitEditorView.dispatch({
+      changes: { from: 0, to: splitEditorView.state.doc.length, insert: content },
+    });
+  } finally {
+    syncingSplit = false;
+  }
+  splitModified = false;
+  updateStatusBar();
+  refreshEolMarkers();
+}
+
+function reloadCurrent() {
+  const target = rightPaneTarget();
+  if (target === 'file') return reloadSplitFile();
+  if (target === 'tab') return reloadTab(tabs.find(t => t.id === splitTabId));
+  return reloadTab(getActiveTab());
+}
+
+function currentFilePath() {
+  return statusTarget().filePath || null;
+}
+
+function openContainingFolder() {
+  const p = currentFilePath();
+  if (p && window.electronAPI) window.electronAPI.showItemInFolder({ filePath: p });
+}
+
+function openInDefaultViewer() {
+  const p = currentFilePath();
+  if (p && window.electronAPI) window.electronAPI.openPath({ filePath: p });
+}
+
+async function showSummary() {
+  if (!window.electronAPI || !window.electronAPI.showInfo) return;
+  const target = statusTarget();
+  const text = target.view.state.doc.toString();
+  const lines = [];
+  lines.push(`Full file path: ${target.filePath || '(unsaved)'}`);
+  if (target.filePath) {
+    const st = await window.electronAPI.fileStat({ filePath: target.filePath });
+    if (st.success) {
+      lines.push(`Created: ${new Date(st.birthtimeMs).toLocaleString()}`);
+      lines.push(`Modified: ${new Date(st.mtimeMs).toLocaleString()}`);
+      lines.push(`Size on disk: ${st.size.toLocaleString()} bytes`);
+    }
+  }
+  const eolCount = Math.max(0, target.view.state.doc.lines - 1);
+  const bytes = new TextEncoder().encode(text.replace(/\n/g, target.eol)).length;
+  const words = text.split(/\s+/).filter(Boolean).length;
+  lines.push('');
+  lines.push(`Lines: ${target.view.state.doc.lines.toLocaleString()}`);
+  lines.push(`Characters (without line endings): ${(text.length - eolCount).toLocaleString()}`);
+  lines.push(`Characters (with line endings): ${(text.length - eolCount + eolCount * target.eol.length).toLocaleString()}`);
+  lines.push(`Words: ${words.toLocaleString()}`);
+  lines.push(`Bytes (as saved): ${bytes.toLocaleString()}`);
+  lines.push(`Line endings: ${eolLabel(target.eol)}`);
+  lines.push('Encoding: UTF-8');
+  await window.electronAPI.showInfo({
+    title: 'File Summary',
+    message: getFileName(target.filePath),
+    detail: lines.join('\n'),
+  });
+}
+
+function focusOtherView() {
+  if (!splitEditorView) return;
+  if (focusedPane === 'right') {
+    if (proseMode) document.getElementById('prose-editor').focus();
+    else editorView.focus();
+  } else {
+    splitEditorView.focus();
+  }
+}
+
+function setEol(eol) {
+  const target = rightPaneTarget();
+  if (target === 'file') {
+    splitEol = eol;
+    splitModified = computeSplitModified();
+    if (splitModified) scheduleSplitAutoSave();
+    updateStatusBar();
+    refreshEolMarkers();
+    return;
+  }
+  const tab = target === 'tab' ? tabs.find(t => t.id === splitTabId) : getActiveTab();
+  if (!tab) return;
+  tab.eol = eol;
+  refreshTabModified(tab);
+  refreshEolMarkers();
 }
 
 function updateWindowTitle() {
@@ -469,17 +924,20 @@ function updateStatusBar() {
   updateWindowTitle();
 }
 
-function markModified() {
-  const tab = getActiveTab();
-  if (!tab) return;
-  const currentContent = getCurrentContent();
-  tab.content = currentContent;
-  tab.modified = currentContent !== tab.savedContent;
+function refreshTabModified(tab) {
+  tab.modified = tab.content !== tab.savedContent || tab.eol !== tab.savedEol;
   renderTabs();
   updateStatusBar();
   if (tab.modified && tab.filePath) {
-    scheduleAutoSave();
+    scheduleAutoSave(tab);
   }
+}
+
+function markModified() {
+  const tab = getActiveTab();
+  if (!tab) return;
+  tab.content = getCurrentContent();
+  refreshTabModified(tab);
 }
 
 function tabContent(tab) {
@@ -489,6 +947,7 @@ function tabContent(tab) {
 function markTabSaved(tab, content) {
   tab.content = content;
   tab.savedContent = content;
+  tab.savedEol = tab.eol;
   tab.modified = false;
   renderTabs();
   updateStatusBar();
@@ -621,6 +1080,8 @@ function mainExtensions() {
     highlightSelectionMatches(),
     wrapCompartment.of(wordWrap ? EditorView.lineWrapping : []),
     fontCompartment.of(paneTheme(currentFontFamily, leftBgColor)),
+    whitespaceCompartment.of(whitespaceExt()),
+    eolCompartment.of(showEol ? eolMarkerPlugin(mainEolLabel) : []),
     wikiLinkPlugin,
     grammarPlugin,
     comparePluginLeft,
@@ -1166,6 +1627,8 @@ function collectSettings() {
     sidebarVisible,
     sidebarWidth: sidebar.style.width || null,
     minimapVisible,
+    showWhitespace,
+    showEol,
   };
 }
 
@@ -1189,6 +1652,8 @@ function applySettings(s) {
   if (s.sidebarVisible === false && sidebarVisible) toggleSidebar();
   if (s.sidebarWidth) document.getElementById('sidebar').style.width = s.sidebarWidth;
   if (s.minimapVisible && !minimapVisible) toggleMinimap();
+  if (s.showWhitespace && !showWhitespace) toggleShowWhitespace();
+  if (s.showEol && !showEol) toggleShowEol();
 }
 
 function applyPaneThemes() {
@@ -1233,8 +1698,10 @@ function adoptSplitFileAsTab() {
   const savedContent = splitSavedContent;
   const modified = splitModified;
   const filePath = splitFilePath;
+  const savedEol = splitSavedEol;
   const tab = createTab(filePath, content);
   tab.eol = eol;
+  tab.savedEol = savedEol;
   tab.savedContent = savedContent;
   tab.modified = modified;
   renderTabs();
@@ -1576,8 +2043,20 @@ function transformText(type) {
     case 'lowercase':
       result = selected.toLowerCase();
       break;
-    case 'titlecase':
-      result = selected.replace(/\b\w/g, c => c.toUpperCase());
+    case 'propercase':
+      result = selected.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+      break;
+    case 'sentencecase':
+      result = selected.toLowerCase().replace(/(^\s*\w|[.!?]\s+\w)/g, m => m.toUpperCase());
+      break;
+    case 'invertcase':
+      result = Array.from(selected, c => {
+        const lower = c.toLowerCase();
+        return c === lower ? c.toUpperCase() : lower;
+      }).join('');
+      break;
+    case 'randomcase':
+      result = Array.from(selected, c => (Math.random() < 0.5 ? c.toLowerCase() : c.toUpperCase())).join('');
       break;
     case 'camelcase':
       result = selected
@@ -1591,9 +2070,28 @@ function transformText(type) {
 }
 
 // Line operations
+function leadingNumber(line) {
+  const m = /^\s*[-+]?\d+(\.\d+)?/.exec(line);
+  return m ? parseFloat(m[0]) : null;
+}
+
+function compareNumeric(a, b) {
+  const na = leadingNumber(a);
+  const nb = leadingNumber(b);
+  if (na === null && nb === null) return a.localeCompare(b);
+  if (na === null) return 1;
+  if (nb === null) return -1;
+  return na - nb;
+}
+
 function lineOperation(type) {
   const view = editableView();
   if (!view) return;
+
+  if (type === 'duplicate') { copyLineDown(view); return; }
+  if (type === 'move-up') { moveLineUp(view); return; }
+  if (type === 'move-down') { moveLineDown(view); return; }
+
   const state = view.state;
   const doc = state.doc;
   const { from, to } = state.selection.main;
@@ -1633,6 +2131,31 @@ function lineOperation(type) {
     case 'reverse':
       result = [...lines].reverse();
       break;
+    case 'sort-asc-ci':
+      result = [...lines].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+      break;
+    case 'sort-desc-ci':
+      result = [...lines].sort((a, b) => b.localeCompare(a, undefined, { sensitivity: 'base' }));
+      break;
+    case 'sort-num-asc':
+      result = [...lines].sort(compareNumeric);
+      break;
+    case 'sort-num-desc':
+      result = [...lines].sort((a, b) => compareNumeric(b, a));
+      break;
+    case 'remove-consecutive-dupes':
+      result = lines.filter((l, i) => i === 0 || l !== lines[i - 1]);
+      break;
+    case 'join':
+      result = [lines.map(l => l.trim()).filter(Boolean).join(' ')];
+      break;
+    case 'randomize':
+      result = [...lines];
+      for (let i = result.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [result[i], result[j]] = [result[j], result[i]];
+      }
+      break;
     default:
       return;
   }
@@ -1647,7 +2170,13 @@ let splitView = false;
 let splitEditorView = null;
 let splitFilePath = null;
 let splitEol = DEFAULT_EOL;
+let splitSavedEol = DEFAULT_EOL;
 let splitSavedContent = '';
+
+function computeSplitModified() {
+  if (!splitEditorView) return false;
+  return splitEditorView.state.doc.toString() !== splitSavedContent || splitEol !== splitSavedEol;
+}
 let splitModified = false;
 let splitAutoSaveTimer = null;
 let syncingSplit = false;
@@ -1730,6 +2259,7 @@ async function saveSplitFile(opts = {}) {
     return false;
   }
   splitSavedContent = content;
+  splitSavedEol = splitEol;
   splitModified = false;
   updateStatusBar();
   return true;
@@ -1748,6 +2278,7 @@ async function saveSplitFileAs() {
   }
   splitFilePath = result.filePath;
   splitSavedContent = content;
+  splitSavedEol = splitEol;
   splitModified = false;
   splitEditorView.dispatch({
     effects: splitLanguageCompartment.reconfigure(getLanguageExtension(splitFilePath)),
@@ -1805,6 +2336,8 @@ function createSplitEditor(content, langExt, mode) {
     splitLanguageCompartment.of(langExt),
     splitWrapCompartment.of(wordWrap ? EditorView.lineWrapping : []),
     splitFontCompartment.of(paneTheme(currentFontFamily, rightBgColor)),
+    splitWhitespaceCompartment.of(whitespaceExt()),
+    splitEolCompartment.of(showEol ? eolMarkerPlugin(splitEolLabel) : []),
     wikiLinkPlugin,
     ViewPlugin.fromClass(class {
       constructor(view) {
@@ -1849,7 +2382,7 @@ function createSplitEditor(content, langExt, mode) {
     extensions.push(
       EditorView.updateListener.of((update) => {
         if (!update.docChanged) return;
-        splitModified = update.state.doc.toString() !== splitSavedContent;
+        splitModified = update.state.doc.toString() !== splitSavedContent || splitEol !== splitSavedEol;
         if (splitModified) scheduleSplitAutoSave();
       })
     );
@@ -1956,9 +2489,11 @@ async function loadFileIntoSplitPane(filePath) {
   createSplitEditor(content, getLanguageExtension(filePath), 'file');
   splitFilePath = filePath;
   splitEol = detectEol(result.content);
+  splitSavedEol = splitEol;
   splitSavedContent = content;
   splitModified = false;
   splitEditorView.focus();
+  refreshEolMarkers();
 }
 
 function initSplitGutter() {
@@ -2229,6 +2764,75 @@ function initDragAndDrop() {
   });
 }
 
+const commands = {
+  'new': () => createTab(null, ''),
+  'save': () => saveCurrentFile(),
+  'save-as': () => saveCurrentFileAs(),
+  'save-copy-as': () => saveCopyAs(),
+  'save-all': () => saveAllTabs(),
+  'reload': () => reloadCurrent(),
+  'close': () => closeTab(activeTabId),
+  'close-all': () => closeAllTabs(),
+  'close-others': () => closeTabsWhere(t => t.id !== activeTabId),
+  'close-left': () => closeTabsWhere((t, i) => i < tabs.findIndex(x => x.id === activeTabId)),
+  'close-right': () => closeTabsWhere((t, i) => i > tabs.findIndex(x => x.id === activeTabId)),
+  'close-unchanged': () => closeTabsWhere(t => !t.modified),
+  'open-containing-folder': () => openContainingFolder(),
+  'open-default-viewer': () => openInDefaultViewer(),
+  'summary': () => showSummary(),
+  'undo': () => doUndo(),
+  'redo': () => doRedo(),
+  'copy-path': () => copyToClipboard(currentFilePath()),
+  'copy-filename': () => copyToClipboard(currentFilePath() ? getFileName(currentFilePath()) : null),
+  'copy-dir': () => {
+    const p = currentFilePath();
+    if (p) copyToClipboard(p.replace(/\\/g, '/').split('/').slice(0, -1).join('/'));
+  },
+  'transform': (type) => transformText(type),
+  'line-op': (type) => lineOperation(type),
+  'toggle-line-comment': () => { const v = editableView(); if (v) toggleComment(v); },
+  'toggle-block-comment': () => { const v = editableView(); if (v) toggleBlockComment(v); },
+  'set-eol': (eol) => setEol(eol),
+  'find': () => openFind(),
+  'replace': () => openFind(),
+  'goto-line': () => showGotoLineDialog(),
+  'toggle-sidebar': () => toggleSidebar(),
+  'toggle-minimap': () => toggleMinimap(),
+  'toggle-whitespace': () => toggleShowWhitespace(),
+  'toggle-eol-markers': () => toggleShowEol(),
+  'fold-all': () => foldAll(activeView()),
+  'unfold-all': () => unfoldAll(activeView()),
+  'toggle-wrap': () => toggleWordWrap(),
+  'zoom-in': () => setFontSize(fontSize + 2),
+  'zoom-out': () => setFontSize(fontSize - 2),
+  'zoom-reset': () => setFontSize(14),
+  'toggle-split': () => toggleSplitView(),
+  'focus-other-view': () => focusOtherView(),
+  'tab': (action) => tabCommand(action),
+  'toggle-theme': () => toggleTheme(),
+};
+
+function runCommand(name, arg) {
+  const fn = commands[name];
+  if (fn) fn(arg);
+}
+
+function initTabShortcuts() {
+  document.addEventListener('keydown', (e) => {
+    if (!e.ctrlKey || e.altKey || e.metaKey) return;
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      tabCommand(e.shiftKey ? 'prev' : 'next');
+    } else if (e.key === 'PageDown') {
+      e.preventDefault();
+      tabCommand(e.shiftKey ? 'move-forward' : 'next');
+    } else if (e.key === 'PageUp') {
+      e.preventDefault();
+      tabCommand(e.shiftKey ? 'move-backward' : 'prev');
+    }
+  }, true);
+}
+
 function wireEvents() {
   document.getElementById('btn-new').addEventListener('click', () => createTab(null, ''));
   document.getElementById('btn-open').addEventListener('click', () => window.electronAPI.openFile());
@@ -2322,26 +2926,7 @@ function wireEvents() {
       loadFolderTree(folderPath);
     });
 
-    window.electronAPI.onMenuNew(() => createTab(null, ''));
-    window.electronAPI.onMenuSave(() => saveCurrentFile());
-    window.electronAPI.onMenuSaveAs(() => saveCurrentFileAs());
-    window.electronAPI.onMenuUndo(doUndo);
-    window.electronAPI.onMenuRedo(doRedo);
-    window.electronAPI.onMenuFind(openFind);
-    window.electronAPI.onMenuReplace(openFind);
-    window.electronAPI.onMenuGotoLine(showGotoLineDialog);
-    window.electronAPI.onMenuToggleWrap(toggleWordWrap);
-    window.electronAPI.onMenuToggleSidebar(toggleSidebar);
-    window.electronAPI.onMenuToggleMinimap(toggleMinimap);
-    window.electronAPI.onMenuFoldAll(() => foldAll(activeView()));
-    window.electronAPI.onMenuUnfoldAll(() => unfoldAll(activeView()));
-    window.electronAPI.onMenuZoomIn(() => setFontSize(fontSize + 2));
-    window.electronAPI.onMenuZoomOut(() => setFontSize(fontSize - 2));
-    window.electronAPI.onMenuZoomReset(() => setFontSize(14));
-    window.electronAPI.onMenuTransform((type) => transformText(type));
-    window.electronAPI.onMenuLineOp((type) => lineOperation(type));
-    window.electronAPI.onMenuToggleSplit(toggleSplitView);
-    window.electronAPI.onMenuToggleTheme(toggleTheme);
+    window.electronAPI.onMenuCommand((name, arg) => runCommand(name, arg));
 
     window.electronAPI.onRestoreSession((session) => {
       restoreSession(session);
@@ -2390,6 +2975,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initDragAndDrop();
   initGotoLineDialog();
   initProseFind();
+  initTabShortcuts();
   initMinimap();
   loadRecentFiles();
 });
