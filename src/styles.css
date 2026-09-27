@@ -1516,6 +1516,200 @@ body.light-theme .dialog-buttons button:last-child {
   display: none;
 }
 
+/* Link map */
+#link-map {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  background:
+    var(--grain),
+    radial-gradient(ellipse at center, #2f352f 0%, #262b26 60%, #1f231f 100%);
+}
+
+#link-map.hidden {
+  display: none;
+}
+
+#link-map-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--oxidized-brass);
+  border-bottom: 2px solid var(--char-black);
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.25));
+  box-shadow: inset 0 1px 0 var(--edge-light), 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+#link-map-status {
+  flex: 1;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.link-map-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.link-map-opt input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+#link-map-refresh,
+#link-map-close {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+
+#link-map-refresh:hover,
+#link-map-close:hover {
+  color: var(--text-active);
+}
+
+#link-map-svg {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+  font-family: 'Segoe UI', -apple-system, sans-serif;
+}
+
+#link-map-legend {
+  display: flex;
+  gap: 18px;
+  padding: 5px 12px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--char-black);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.lm-key {
+  display: inline-block;
+  width: 22px;
+  height: 0;
+  border-top: 2px solid;
+  vertical-align: middle;
+  margin-right: 5px;
+}
+
+.lm-key-two { border-color: var(--accent); }
+.lm-key-one { border-color: #6fa88a; }
+.lm-key-broken { border-color: #dc4040; border-top-style: dashed; }
+
+.lm-ring {
+  fill: none;
+  stroke: rgba(200, 180, 140, 0.09);
+  stroke-width: 1;
+  stroke-dasharray: 3 5;
+}
+
+.lm-edge {
+  stroke-width: 1.4;
+  opacity: 0.55;
+  transition: opacity 0.12s, stroke-width 0.12s;
+}
+
+.lm-one { stroke: #6fa88a; }
+.lm-two { stroke: var(--accent); stroke-width: 2.2; opacity: 0.8; }
+.lm-broken { stroke: #dc4040; stroke-dasharray: 4 3; opacity: 0.6; }
+.lm-edge.lm-hot { opacity: 1; stroke-width: 2.6; }
+.lm-arrow-one { fill: #6fa88a; }
+.lm-arrow-two { fill: var(--accent); }
+
+.lm-node { cursor: pointer; }
+
+.lm-node circle {
+  fill: #3a413a;
+  stroke: #8fb59e;
+  stroke-width: 1.5;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.6));
+  transition: fill 0.12s, stroke 0.12s;
+}
+
+.lm-node text {
+  fill: var(--text-primary);
+  font-size: 11px;
+  paint-order: stroke;
+  stroke: rgba(20, 24, 20, 0.85);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.lm-node:hover circle,
+.lm-node.lm-hot circle {
+  fill: #4a5a4a;
+  stroke: var(--accent);
+}
+
+.lm-node.lm-hot text,
+.lm-node.lm-center text {
+  fill: var(--text-active);
+}
+
+.lm-node.lm-center circle {
+  fill: var(--accent);
+  stroke: #ffe4a0;
+  stroke-width: 2;
+  filter: drop-shadow(0 0 10px rgba(200, 150, 46, 0.6));
+}
+
+.lm-node.lm-orphan circle {
+  fill: #2c312c;
+  stroke: #556055;
+  stroke-dasharray: 2 2;
+}
+
+.lm-node.lm-orphan text {
+  fill: var(--text-secondary);
+}
+
+.lm-missing {
+  fill: #dc6060;
+  font-size: 10px;
+  font-style: italic;
+  paint-order: stroke;
+  stroke: rgba(20, 24, 20, 0.85);
+  stroke-width: 3px;
+  pointer-events: none;
+}
+
+body.light-theme #link-map {
+  background:
+    var(--grain),
+    radial-gradient(ellipse at center, #f2efe6 0%, #e4e0d6 60%, #d8d4ca 100%);
+}
+
+body.light-theme .lm-ring { stroke: rgba(80, 70, 40, 0.15); }
+body.light-theme .lm-node circle { fill: #f6f3ea; stroke: #4f7a62; }
+body.light-theme .lm-node text,
+body.light-theme .lm-missing { stroke: rgba(246, 243, 234, 0.9); }
+body.light-theme .lm-one { stroke: #4f7a62; }
+body.light-theme .lm-arrow-one { fill: #4f7a62; }
+body.light-theme .lm-node:hover circle,
+body.light-theme .lm-node.lm-hot circle { fill: #e6e0cc; }
+
 /* Change history margin */
 .cm-change-gutter {
   width: 4px;

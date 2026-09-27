@@ -1315,6 +1315,7 @@ function switchToTab(id) {
   updateStatusBar();
   renderTabs();
   scheduleFunctionListRefresh();
+  if (linkMapOpen && linkGraph) renderLinkMap();
 }
 
 async function confirmDiscard(message) {
@@ -2130,6 +2131,7 @@ function tabContent(tab) {
 }
 
 function markTabSaved(tab, content) {
+  if (tab.filePath && /\.(md|markdown|txt)$/i.test(tab.filePath)) linkGraph = null;
   tab.content = content;
   tab.savedContent = content;
   tab.savedEol = tab.eol;
@@ -2963,6 +2965,8 @@ async function openFileFromPath(filePath) {
 
 async function loadFolderTree(folderPath) {
   currentFolderPath = folderPath;
+  linkGraph = null;
+  if (linkMapOpen) rescanLinkMap();
   const container = document.getElementById('file-tree-content');
   container.innerHTML = '';
 
@@ -4045,6 +4049,7 @@ const commands = {
   'rename': () => showRenameDialog(null),
   'print': () => printCurrent(),
   'column-editor': () => showColumnEditor(),
+  'link-map': () => toggleLinkMap(),
   'change-history': (action) => changeHistoryCommand(action),
   'check-closers': () => runCloserCheck(),
   'find': () => openFind(),
@@ -4071,6 +4076,275 @@ const commands = {
 function runCommand(name, arg) {
   const fn = commands[name];
   if (fn) fn(arg);
+}
+
+// Link map
+let linkMapOpen = false;
+let linkGraph = null;
+let linkMapCenter = null;
+let linkMapHover = null;
+
+function normPath(p) {
+  return p ? p.replace(/\\/g, '/') : p;
+}
+
+function linkMapVisible() {
+  return linkMapOpen;
+}
+
+async function openLinkMap() {
+  const overlay = document.getElementById('link-map');
+  if (!currentFolderPath) {
+    overlay.classList.remove('hidden');
+    linkMapOpen = true;
+    document.getElementById('btn-link-map').classList.add('active');
+    document.getElementById('link-map-status').textContent = 'Open a folder first (Open Folder in the sidebar)';
+    document.getElementById('link-map-svg').innerHTML = '';
+    return;
+  }
+  overlay.classList.remove('hidden');
+  linkMapOpen = true;
+  document.getElementById('btn-link-map').classList.add('active');
+  if (!linkGraph) await rescanLinkMap();
+  else renderLinkMap();
+}
+
+function closeLinkMap() {
+  linkMapOpen = false;
+  document.getElementById('link-map').classList.add('hidden');
+  document.getElementById('btn-link-map').classList.remove('active');
+  activeView().focus();
+}
+
+function toggleLinkMap() {
+  if (linkMapOpen) closeLinkMap();
+  else openLinkMap();
+}
+
+async function rescanLinkMap() {
+  if (!window.electronAPI || !window.electronAPI.scanLinks || !currentFolderPath) return;
+  document.getElementById('link-map-status').textContent = 'Scanning...';
+  const result = await window.electronAPI.scanLinks({ dirPath: currentFolderPath });
+  if (!result.success) {
+    document.getElementById('link-map-status').textContent = 'Scan failed: ' + (result.error || 'unknown');
+    return;
+  }
+  linkGraph = buildLinkGraph(result);
+  renderLinkMap();
+}
+
+function buildLinkGraph(result) {
+  const nodes = new Map();
+  for (const f of result.files) {
+    const p = normPath(f);
+    nodes.set(p, { path: p, name: getFileName(p), out: new Set(), in: new Set(), missing: [] });
+  }
+  const edges = new Map();
+  for (const l of result.links) {
+    const from = normPath(l.from);
+    const src = nodes.get(from);
+    if (!src) continue;
+    if (!l.to) {
+      src.missing.push(l.text);
+      continue;
+    }
+    const to = normPath(l.to);
+    if (to === from || !nodes.has(to)) continue;
+    src.out.add(to);
+    nodes.get(to).in.add(from);
+    const key = from < to ? from + '\u0000' + to : to + '\u0000' + from;
+    let e = edges.get(key);
+    if (!e) {
+      e = { a: from < to ? from : to, b: from < to ? to : from, ab: false, ba: false };
+      edges.set(key, e);
+    }
+    if (from === e.a) e.ab = true; else e.ba = true;
+  }
+  return { nodes, edges: [...edges.values()] };
+}
+
+function linkMapCenterPath() {
+  const target = statusTarget();
+  const p = normPath(target.filePath);
+  if (linkGraph && p && linkGraph.nodes.has(p)) return p;
+  return null;
+}
+
+function layoutLinkMap(center, showOrphans) {
+  const { nodes } = linkGraph;
+  const placed = new Map();
+  const neighbors = (p) => {
+    const n = nodes.get(p);
+    return [...new Set([...n.out, ...n.in])];
+  };
+
+  if (center) {
+    const tree = new Map();
+    const ring = new Map([[center, 0]]);
+    const queue = [center];
+    tree.set(center, []);
+    while (queue.length) {
+      const cur = queue.shift();
+      for (const nb of neighbors(cur).sort()) {
+        if (ring.has(nb)) continue;
+        ring.set(nb, ring.get(cur) + 1);
+        tree.get(cur).push(nb);
+        tree.set(nb, []);
+        queue.push(nb);
+      }
+    }
+    const leaves = new Map();
+    const countLeaves = (p) => {
+      const kids = tree.get(p);
+      const c = kids.length ? kids.reduce((s, k) => s + countLeaves(k), 0) : 1;
+      leaves.set(p, c);
+      return c;
+    };
+    countLeaves(center);
+    const assign = (p, a0, a1) => {
+      const kids = tree.get(p);
+      if (!kids.length) return;
+      const total = leaves.get(p);
+      let a = a0;
+      for (const k of kids) {
+        const span = (a1 - a0) * (leaves.get(k) / total);
+        placed.set(k, { ring: ring.get(k), angle: a + span / 2 });
+        assign(k, a, a + span);
+        a += span;
+      }
+    };
+    placed.set(center, { ring: 0, angle: 0 });
+    assign(center, -Math.PI / 2, Math.PI * 1.5);
+  }
+
+  const maxRing = Math.max(0, ...[...placed.values()].map(v => v.ring));
+  if (showOrphans || !center) {
+    const rest = [...nodes.keys()].filter(p => !placed.has(p)).sort();
+    const outer = maxRing + 1;
+    rest.forEach((p, i) => {
+      placed.set(p, { ring: outer, angle: -Math.PI / 2 + (Math.PI * 2 * i) / Math.max(1, rest.length), orphan: true });
+    });
+  }
+  return placed;
+}
+
+function renderLinkMap() {
+  const svg = document.getElementById('link-map-svg');
+  const status = document.getElementById('link-map-status');
+  if (!linkGraph) return;
+
+  const follow = document.getElementById('link-map-follow').checked;
+  const showOrphans = document.getElementById('link-map-orphans').checked;
+  if (follow || !linkMapCenter || !linkGraph.nodes.has(linkMapCenter)) {
+    linkMapCenter = linkMapCenterPath() || linkMapCenter;
+  }
+  if (linkMapCenter && !linkGraph.nodes.has(linkMapCenter)) linkMapCenter = null;
+
+  const placed = layoutLinkMap(linkMapCenter, showOrphans);
+  const rect = svg.getBoundingClientRect();
+  const W = Math.max(200, rect.width);
+  const H = Math.max(200, rect.height);
+  const cx = W / 2;
+  const cy = H / 2;
+  const maxRing = Math.max(1, ...[...placed.values()].map(v => v.ring));
+  const R = Math.min(W, H) / 2 - 70;
+  const radiusFor = (ring) => (ring === 0 ? 0 : (R * ring) / maxRing);
+  const pos = new Map();
+  for (const [p, v] of placed) {
+    const r = radiusFor(v.ring);
+    pos.set(p, { x: cx + r * Math.cos(v.angle), y: cy + r * Math.sin(v.angle), ...v });
+  }
+
+  const nodeCount = placed.size;
+  const linkCount = linkGraph.edges.filter(e => pos.has(e.a) && pos.has(e.b)).length;
+  const missingCount = [...linkGraph.nodes.values()].reduce((s, n) => s + n.missing.length, 0);
+  status.textContent = linkMapCenter
+    ? `${nodeCount} file${nodeCount === 1 ? '' : 's'} within reach, ${linkCount} link${linkCount === 1 ? '' : 's'}${missingCount ? `, ${missingCount} missing target${missingCount === 1 ? '' : 's'}` : ''}`
+    : `Active file is not a .md/.txt in the folder; showing all ${nodeCount} files`;
+
+  const esc = escapeHtml;
+  const parts = [];
+  parts.push(`<defs>
+    <marker id="lm-arrow-one" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="lm-arrow-one"/></marker>
+    <marker id="lm-arrow-two" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="lm-arrow-two"/></marker>
+  </defs>`);
+
+  for (let k = 1; k <= maxRing; k++) {
+    parts.push(`<circle class="lm-ring" cx="${cx}" cy="${cy}" r="${radiusFor(k)}"/>`);
+  }
+
+  const NODE_R = 7;
+  const shorten = (x1, y1, x2, y2, pad) => {
+    const dx = x2 - x1, dy = y2 - y1;
+    const d = Math.hypot(dx, dy) || 1;
+    return [x1 + (dx / d) * pad, y1 + (dy / d) * pad, x2 - (dx / d) * pad, y2 - (dy / d) * pad];
+  };
+
+  for (const e of linkGraph.edges) {
+    const A = pos.get(e.a), B = pos.get(e.b);
+    if (!A || !B) continue;
+    const two = e.ab && e.ba;
+    let from = A, to = B;
+    if (!two && e.ba) { from = B; to = A; }
+    const [x1, y1, x2, y2] = shorten(from.x, from.y, to.x, to.y, NODE_R + 3);
+    const hot = linkMapHover && (e.a === linkMapHover || e.b === linkMapHover);
+    parts.push(`<line class="lm-edge ${two ? 'lm-two' : 'lm-one'}${hot ? ' lm-hot' : ''}" data-a="${esc(e.a)}" data-b="${esc(e.b)}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" marker-end="url(#lm-arrow-${two ? 'two' : 'one'})"${two ? ` marker-start="url(#lm-arrow-two)"` : ''}/>`);
+  }
+
+  for (const [p, v] of pos) {
+    const n = linkGraph.nodes.get(p);
+    if (!n.missing.length) continue;
+    n.missing.forEach((text, i) => {
+      const ang = v.angle + (i + 1) * 0.35 + (v.ring === 0 ? 0 : Math.PI);
+      const len = 42;
+      const x2 = v.x + len * Math.cos(ang), y2 = v.y + len * Math.sin(ang);
+      parts.push(`<line class="lm-edge lm-broken" x1="${v.x}" y1="${v.y}" x2="${x2}" y2="${y2}"/>`);
+      parts.push(`<text class="lm-missing" x="${x2 + 4 * Math.cos(ang)}" y="${y2 + 4 * Math.sin(ang)}" text-anchor="${Math.cos(ang) < 0 ? 'end' : 'start'}">${esc(text)}?</text>`);
+    });
+  }
+
+  for (const [p, v] of pos) {
+    const n = linkGraph.nodes.get(p);
+    const isCenter = p === linkMapCenter;
+    const hot = linkMapHover === p || (linkMapHover && (n.out.has(linkMapHover) || n.in.has(linkMapHover)));
+    const cls = ['lm-node', isCenter ? 'lm-center' : '', v.orphan ? 'lm-orphan' : '', hot ? 'lm-hot' : ''].filter(Boolean).join(' ');
+    const label = n.name.replace(/\.(md|markdown|txt)$/i, '');
+    const labelSide = v.ring === 0 ? 'middle' : (Math.cos(v.angle) < -0.2 ? 'end' : Math.cos(v.angle) > 0.2 ? 'start' : 'middle');
+    const lx = v.ring === 0 ? v.x : v.x + 12 * Math.cos(v.angle);
+    const ly = v.ring === 0 ? v.y + 22 : v.y + 12 * Math.sin(v.angle) + 4;
+    parts.push(`<g class="${cls}" data-path="${esc(p)}"><circle cx="${v.x}" cy="${v.y}" r="${isCenter ? NODE_R + 4 : NODE_R}"/><text x="${lx}" y="${ly}" text-anchor="${labelSide}">${esc(label)}</text><title>${esc(p)}\n${n.out.size} out, ${n.in.size} in${n.missing.length ? `, ${n.missing.length} missing` : ''}</title></g>`);
+  }
+
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = parts.join('');
+
+  svg.querySelectorAll('.lm-node').forEach(g => {
+    const p = g.dataset.path;
+    g.addEventListener('mouseenter', () => { linkMapHover = p; renderLinkMap(); });
+    g.addEventListener('mouseleave', () => { linkMapHover = null; renderLinkMap(); });
+    g.addEventListener('click', (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        linkMapCenter = p;
+        document.getElementById('link-map-follow').checked = false;
+        renderLinkMap();
+      } else {
+        closeLinkMap();
+        openFileFromPath(p);
+      }
+    });
+  });
+}
+
+function initLinkMap() {
+  document.getElementById('btn-link-map').addEventListener('click', toggleLinkMap);
+  document.getElementById('link-map-close').addEventListener('click', closeLinkMap);
+  document.getElementById('link-map-refresh').addEventListener('click', rescanLinkMap);
+  document.getElementById('link-map-orphans').addEventListener('change', renderLinkMap);
+  document.getElementById('link-map-follow').addEventListener('change', renderLinkMap);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && linkMapOpen) closeLinkMap();
+  });
+  window.addEventListener('resize', () => { if (linkMapOpen) renderLinkMap(); });
 }
 
 // Find in Files
@@ -4367,6 +4641,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initFindInFiles();
   initRenameDialog();
   initColumnEditor();
+  initLinkMap();
   initMinimap();
   loadRecentFiles();
 });

@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openPath: (data) => ipcRenderer.invoke('shell-open-path', data),
   fileStat: (data) => ipcRenderer.invoke('file-stat', data),
   findInFiles: (data) => ipcRenderer.invoke('find-in-files', data),
+  scanLinks: (data) => ipcRenderer.invoke('scan-links', data),
   renameFile: (data) => ipcRenderer.invoke('file-rename', data),
   printText: (data) => ipcRenderer.invoke('print-text', data),
   setLanguageList: (list) => ipcRenderer.send('language-list', list),

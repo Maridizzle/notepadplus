@@ -476,6 +476,8 @@ function buildMenu() {
         cmd('Toggle Split View', 'toggle-split', { accelerator: 'CmdOrCtrl+\\' }),
         cmd('Focus Other View', 'focus-other-view', { accelerator: 'F8' }),
         { type: 'separator' },
+        cmd('Link Map', 'link-map', { accelerator: 'CmdOrCtrl+Shift+M' }),
+        { type: 'separator' },
         {
           label: 'Tab',
           submenu: [
@@ -708,6 +710,92 @@ ipcMain.handle('print-text', async (event, { title, text, fontFamily, fontSize }
       resolve({ success, reason: reason || '' });
     });
   });
+});
+
+async function scanLinks(rootDir) {
+  const files = [];
+  async function walk(d) {
+    let entries;
+    try {
+      entries = await fs.promises.readdir(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { await walk(p); continue; }
+      if (!e.isFile()) continue;
+      if (!/\.(md|markdown|txt)$/i.test(e.name)) continue;
+      files.push(p);
+    }
+  }
+  await walk(rootDir);
+
+  const byName = new Map();
+  for (const p of files) {
+    const base = path.basename(p);
+    const noExt = base.replace(/\.[^.]+$/, '');
+    for (const key of [base.toLowerCase(), noExt.toLowerCase()]) {
+      if (!byName.has(key)) byName.set(key, []);
+      byName.get(key).push(p);
+    }
+  }
+
+  const resolveLink = (fromPath, text) => {
+    const fromDir = path.dirname(fromPath);
+    const cleaned = text.trim().replace(/\\/g, '/');
+    const candidates = [cleaned, cleaned + '.md', cleaned + '.txt', cleaned + '.markdown'];
+    for (const c of candidates) {
+      const abs = path.resolve(fromDir, c);
+      if (files.includes(abs)) return abs;
+      const absRoot = path.resolve(rootDir, c);
+      if (files.includes(absRoot)) return absRoot;
+    }
+    const leaf = cleaned.split('/').pop().toLowerCase();
+    const matches = byName.get(leaf) || byName.get(leaf.replace(/\.[^.]+$/, '')) || [];
+    if (matches.length) {
+      const sameDir = matches.find(m => path.dirname(m) === fromDir);
+      return sameDir || matches[0];
+    }
+    return null;
+  };
+
+  const links = [];
+  const MAX_SIZE = 2 * 1024 * 1024;
+  for (const p of files) {
+    let buf;
+    try {
+      const st = await fs.promises.stat(p);
+      if (st.size > MAX_SIZE) continue;
+      buf = await fs.promises.readFile(p);
+    } catch {
+      continue;
+    }
+    const text = decodeBuffer(buf, detectEncoding(buf));
+    const re = /\[\[([^\]\n]+)\]\]/g;
+    let m;
+    const seen = new Set();
+    while ((m = re.exec(text)) !== null) {
+      const target = m[1].split('|')[0].split('#')[0];
+      const to = resolveLink(p, target);
+      const key = to || ('missing:' + target.trim().toLowerCase());
+      if (seen.has(key)) continue;
+      seen.add(key);
+      links.push({ from: p, to, text: target.trim() });
+    }
+  }
+  return { files, links };
+}
+
+ipcMain.handle('scan-links', async (event, { dirPath }) => {
+  try {
+    if (!fs.statSync(dirPath).isDirectory()) return { success: false, error: 'Folder not found.' };
+    const result = await scanLinks(dirPath);
+    return { success: true, ...result };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 });
 
 ipcMain.handle('find-in-files', async (event, opts) => {

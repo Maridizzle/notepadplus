@@ -76,6 +76,7 @@
     <button id="btn-closers" title="Find missing or extra brackets and quotes">Closers</button>
     <span class="toolbar-separator"></span>
     <button id="btn-compare" title="Compare Files">Compare</button>
+    <button id="btn-link-map" title="Link Map (Ctrl+Shift+M)">Map</button>
   </div>
 
   <div id="tab-bar">
@@ -117,6 +118,23 @@
       <div id="editor-split"></div>
       <div id="minimap" class="hidden">
         <canvas id="minimap-canvas"></canvas>
+      </div>
+      <div id="link-map" class="hidden">
+        <div id="link-map-header">
+          <span id="link-map-title">LINK MAP</span>
+          <span id="link-map-status"></span>
+          <label class="link-map-opt"><input type="checkbox" id="link-map-orphans"> Orphans</label>
+          <label class="link-map-opt"><input type="checkbox" id="link-map-follow" checked> Follow active tab</label>
+          <button id="link-map-refresh" title="Rescan folder">&#8635;</button>
+          <button id="link-map-close" title="Close (Esc)">&times;</button>
+        </div>
+        <svg id="link-map-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div id="link-map-legend">
+          <span><i class="lm-key lm-key-two"></i> links both ways</span>
+          <span><i class="lm-key lm-key-one"></i> links one way</span>
+          <span><i class="lm-key lm-key-broken"></i> target missing</span>
+          <span>click: open &middot; ctrl+click: center</span>
+        </div>
       </div>
     </div>
     <div id="grammar-panel" class="hidden">
