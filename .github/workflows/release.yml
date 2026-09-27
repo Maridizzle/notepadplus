@@ -28,6 +28,9 @@ jobs:
           - os: windows-latest
             platform: win7
             dir: win7
+          - os: ubuntu-latest
+            platform: linux
+            dir: .
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -52,6 +55,10 @@ jobs:
           VERSION="${VERSION%-win7}"
           npm version "$VERSION" --no-git-tag-version --allow-same-version
 
+      - name: Install Linux packaging tools
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools
+
       - name: Copy sources into Windows 7 build
         if: matrix.platform == 'win7'
         working-directory: win7
@@ -74,6 +81,8 @@ jobs:
           path: |
             ${{ matrix.dir }}/dist/*.exe
             ${{ matrix.dir }}/dist/*.dmg
+            ${{ matrix.dir }}/dist/*.pacman
+            ${{ matrix.dir }}/dist/*.AppImage
           if-no-files-found: error
 
   release:
@@ -106,6 +115,10 @@ jobs:
           macOS (Apple Silicon)
             NotepadPlus-$VERSION-arm64.dmg
 
+          Linux
+            NotepadPlus-$VERSION-x64.pacman     Arch / Manjaro: sudo pacman -U NotepadPlus-$VERSION-x64.pacman
+            NotepadPlus-$VERSION-x86_64.AppImage   any distro: chmod +x then run it, no install needed
+
           Installers are not code-signed, so Windows SmartScreen may show
           "Windows protected your PC". Click "More info" then "Run anyway".
           On macOS, right-click the app and choose Open the first time.
@@ -131,5 +144,7 @@ jobs:
             - `NotepadPlus-Win7.Setup.*.exe`: Windows 7 / 8 installer
             - `NotepadPlus-Win7.*.exe`: Windows 7 / 8 portable
             - `NotepadPlus-*-arm64.dmg`: macOS (Apple Silicon)
+            - `NotepadPlus-*-x64.pacman`: Arch / Manjaro (`sudo pacman -U <file>`)
+            - `NotepadPlus-*-x86_64.AppImage`: any Linux distro, portable (`chmod +x` then run)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
