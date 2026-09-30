@@ -322,7 +322,8 @@ body {
   white-space: nowrap;
 }
 
-#tab-context-menu .ctx-item:hover {
+#tab-context-menu .ctx-item:hover,
+#tab-context-menu .ctx-item.active {
   background: var(--accent);
   color: var(--char-black);
 }
@@ -1973,6 +1974,112 @@ body.light-theme .lm-node.lm-hot circle { fill: #e6e0cc; }
   font-size: 11px;
   color: var(--text-secondary);
   margin-bottom: 12px;
+}
+
+/* Command palette and keyboard shortcuts reference */
+#palette-dialog {
+  padding-top: 60px;
+}
+
+#palette-dialog .dialog-box,
+#shortcuts-dialog .dialog-box {
+  width: 640px;
+  max-width: 92vw;
+}
+
+#palette-input,
+#shortcuts-filter {
+  margin-bottom: 8px;
+}
+
+.palette-list {
+  max-height: 60vh;
+  overflow-y: auto;
+  border: 2px solid var(--char-black);
+  border-radius: 4px;
+  background: var(--verdigris-deep);
+}
+
+.palette-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.palette-item .p-path {
+  color: var(--text-secondary);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.palette-item .p-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-item .p-key,
+.sc-key {
+  font-family: 'Consolas', 'Fira Code', monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.palette-item.active,
+.palette-item:hover {
+  background: var(--accent);
+  color: var(--char-black);
+}
+
+.palette-item.active .p-path,
+.palette-item.active .p-key,
+.palette-item:hover .p-path,
+.palette-item:hover .p-key {
+  color: var(--char-black);
+}
+
+.palette-empty {
+  padding: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.sc-group {
+  margin: 6px 0 10px;
+}
+
+.sc-group h4 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+
+.sc-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 6px;
+  font-size: 13px;
+}
+
+.sc-row:nth-child(even) {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+body.light-theme .sc-row:nth-child(even) {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.sc-row .sc-key {
+  color: var(--text-primary);
 }
 
 /* Grammar panel */

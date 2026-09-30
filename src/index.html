@@ -254,6 +254,26 @@
     </div>
   </div>
 
+  <div id="palette-dialog" class="dialog-overlay hidden">
+    <div class="dialog-box">
+      <label for="palette-input">Command Palette</label>
+      <input type="text" id="palette-input" placeholder="Type a command name, then Enter" autocomplete="off">
+      <div id="palette-list" class="palette-list"></div>
+      <div class="dialog-hint">Up and Down to choose, Enter to run, Escape to close.</div>
+    </div>
+  </div>
+
+  <div id="shortcuts-dialog" class="dialog-overlay hidden">
+    <div class="dialog-box dialog-tall">
+      <label for="shortcuts-filter">Keyboard Shortcuts</label>
+      <input type="text" id="shortcuts-filter" placeholder="Filter by command or key" autocomplete="off">
+      <div id="shortcuts-list" class="palette-list"></div>
+      <div class="dialog-buttons">
+        <button id="shortcuts-close">Close</button>
+      </div>
+    </div>
+  </div>
+
   <div id="rename-dialog" class="dialog-overlay hidden">
     <div class="dialog-box">
       <label for="rename-input">Rename:</label>

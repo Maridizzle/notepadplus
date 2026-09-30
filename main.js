@@ -272,10 +272,46 @@ app.on('open-file', (event, filePath) => {
 
 let languageList = [];
 
-function buildMenu() {
-  const cmd = (label, name, extra = {}) => ({ label, click: () => send(name, extra.arg), ...extra });
+// Flattened copy of the menu for the renderer's command palette and
+// shortcut reference. Only label, path, command name, arg and accelerator
+// travel; click handlers stay here.
+function serializeMenu(template, trail = []) {
+  const out = [];
+  for (const item of template) {
+    if (!item || item.type === 'separator' || item.enabled === false) continue;
+    if (item.submenu) {
+      out.push(...serializeMenu(item.submenu, [...trail, item.label]));
+    } else if (item.label) {
+      out.push({
+        label: item.label.replace(/\.\.\.$/, ''),
+        path: trail,
+        name: item.cmdName || null,
+        arg: item.arg === undefined ? null : item.arg,
+        accelerator: item.accelerator || null,
+        native: item.cmdName ? null : item.label,
+      });
+    }
+  }
+  return out;
+}
 
-  return Menu.buildFromTemplate([
+let menuTemplate = [];
+
+function buildMenu() {
+  const cmd = (label, name, extra = {}) => ({ label, cmdName: name, click: () => send(name, extra.arg), ...extra });
+
+  menuTemplate = menuTemplateFor(cmd);
+  return Menu.buildFromTemplate(menuTemplate);
+}
+
+function sendMenuTemplate() {
+  if (mainWindow && rendererReady) {
+    mainWindow.webContents.send('menu-template', serializeMenu(menuTemplate));
+  }
+}
+
+function menuTemplateFor(cmd) {
+  return [
     {
       label: 'File',
       submenu: [
@@ -285,27 +321,27 @@ function buildMenu() {
         { type: 'separator' },
         cmd('Save', 'save', { accelerator: 'CmdOrCtrl+S' }),
         cmd('Save As...', 'save-as', { accelerator: 'CmdOrCtrl+Alt+S' }),
-        cmd('Save a Copy As...', 'save-copy-as'),
+        cmd('Save a Copy As...', 'save-copy-as', { accelerator: 'CmdOrCtrl+Alt+Shift+S' }),
         cmd('Save All', 'save-all', { accelerator: 'CmdOrCtrl+Shift+S' }),
-        cmd('Rename...', 'rename'),
+        cmd('Rename...', 'rename', { accelerator: 'CmdOrCtrl+Alt+R' }),
         { type: 'separator' },
         cmd('Close', 'close', { accelerator: 'CmdOrCtrl+W' }),
         cmd('Close All', 'close-all', { accelerator: 'CmdOrCtrl+Shift+W' }),
         {
           label: 'Close More',
           submenu: [
-            cmd('Close All But Active Document', 'close-others'),
-            cmd('Close All to the Left', 'close-left'),
-            cmd('Close All to the Right', 'close-right'),
-            cmd('Close All Unchanged', 'close-unchanged'),
+            cmd('Close All But Active Document', 'close-others', { accelerator: 'CmdOrCtrl+Alt+W' }),
+            cmd('Close All to the Left', 'close-left', { accelerator: 'CmdOrCtrl+Alt+Shift+Left' }),
+            cmd('Close All to the Right', 'close-right', { accelerator: 'CmdOrCtrl+Alt+Shift+Right' }),
+            cmd('Close All Unchanged', 'close-unchanged', { accelerator: 'CmdOrCtrl+Alt+Shift+W' }),
           ],
         },
         { type: 'separator' },
         { label: 'Open Folder...', accelerator: 'CmdOrCtrl+Shift+O', click: () => handleFolderOpen() },
-        cmd('Open Containing Folder', 'open-containing-folder'),
-        cmd('Open in Default Viewer', 'open-default-viewer'),
+        cmd('Open Containing Folder', 'open-containing-folder', { accelerator: 'CmdOrCtrl+Alt+O' }),
+        cmd('Open in Default Viewer', 'open-default-viewer', { accelerator: 'CmdOrCtrl+Alt+Shift+O' }),
         { type: 'separator' },
-        cmd('File Summary...', 'summary'),
+        cmd('File Summary...', 'summary', { accelerator: 'CmdOrCtrl+Alt+I' }),
         { type: 'separator' },
         cmd('Print...', 'print', { accelerator: 'CmdOrCtrl+P' }),
         { type: 'separator' },
@@ -326,9 +362,9 @@ function buildMenu() {
         {
           label: 'Copy to Clipboard',
           submenu: [
-            cmd('Current Full File Path', 'copy-path'),
-            cmd('Current File Name', 'copy-filename'),
-            cmd('Current Directory Path', 'copy-dir'),
+            cmd('Current Full File Path', 'copy-path', { accelerator: 'CmdOrCtrl+Alt+Shift+C' }),
+            cmd('Current File Name', 'copy-filename', { accelerator: 'CmdOrCtrl+Alt+Shift+N' }),
+            cmd('Current Directory Path', 'copy-dir', { accelerator: 'CmdOrCtrl+Alt+Shift+F' }),
           ],
         },
         { type: 'separator' },
@@ -337,34 +373,35 @@ function buildMenu() {
           submenu: [
             cmd('UPPERCASE', 'transform', { arg: 'uppercase', accelerator: 'CmdOrCtrl+Shift+U' }),
             cmd('lowercase', 'transform', { arg: 'lowercase', accelerator: 'CmdOrCtrl+U' }),
-            cmd('Proper Case', 'transform', { arg: 'propercase' }),
-            cmd('Sentence case', 'transform', { arg: 'sentencecase' }),
-            cmd('iNVERT cASE', 'transform', { arg: 'invertcase' }),
-            cmd('ranDOm CasE', 'transform', { arg: 'randomcase' }),
-            cmd('camelCase', 'transform', { arg: 'camelcase' }),
+            cmd('Proper Case', 'transform', { arg: 'propercase', accelerator: 'CmdOrCtrl+Alt+U' }),
+            cmd('Title Case', 'transform', { arg: 'titlecase', accelerator: 'CmdOrCtrl+Alt+T' }),
+            cmd('Sentence case', 'transform', { arg: 'sentencecase', accelerator: 'CmdOrCtrl+Alt+Shift+U' }),
+            cmd('iNVERT cASE', 'transform', { arg: 'invertcase', accelerator: 'CmdOrCtrl+Alt+Shift+I' }),
+            cmd('ranDOm CasE', 'transform', { arg: 'randomcase', accelerator: 'CmdOrCtrl+Alt+Shift+R' }),
+            cmd('camelCase', 'transform', { arg: 'camelcase', accelerator: 'CmdOrCtrl+Alt+Shift+M' }),
           ],
         },
         {
           label: 'Line Operations',
           submenu: [
-            cmd('Duplicate Current Line', 'line-op', { arg: 'duplicate' }),
-            cmd('Join Lines', 'line-op', { arg: 'join' }),
+            cmd('Duplicate Current Line', 'line-op', { arg: 'duplicate', accelerator: 'CmdOrCtrl+Shift+D' }),
+            cmd('Join Lines', 'line-op', { arg: 'join', accelerator: 'CmdOrCtrl+J' }),
             cmd('Move Up Current Line', 'line-op', { arg: 'move-up', accelerator: 'Alt+Up', registerAccelerator: false }),
             cmd('Move Down Current Line', 'line-op', { arg: 'move-down', accelerator: 'Alt+Down', registerAccelerator: false }),
             { type: 'separator' },
-            cmd('Sort Lines Lexicographically Ascending', 'line-op', { arg: 'sort-asc' }),
-            cmd('Sort Lines Lexicographically Descending', 'line-op', { arg: 'sort-desc' }),
-            cmd('Sort Lines Ascending Ignoring Case', 'line-op', { arg: 'sort-asc-ci' }),
-            cmd('Sort Lines Descending Ignoring Case', 'line-op', { arg: 'sort-desc-ci' }),
-            cmd('Sort Lines As Numbers Ascending', 'line-op', { arg: 'sort-num-asc' }),
-            cmd('Sort Lines As Numbers Descending', 'line-op', { arg: 'sort-num-desc' }),
+            cmd('Sort Lines Lexicographically Ascending', 'line-op', { arg: 'sort-asc', accelerator: 'CmdOrCtrl+Alt+A' }),
+            cmd('Sort Lines Lexicographically Descending', 'line-op', { arg: 'sort-desc', accelerator: 'CmdOrCtrl+Alt+Z' }),
+            cmd('Sort Lines Ascending Ignoring Case', 'line-op', { arg: 'sort-asc-ci', accelerator: 'CmdOrCtrl+Alt+Shift+A' }),
+            cmd('Sort Lines Descending Ignoring Case', 'line-op', { arg: 'sort-desc-ci', accelerator: 'CmdOrCtrl+Alt+Shift+Z' }),
+            cmd('Sort Lines As Numbers Ascending', 'line-op', { arg: 'sort-num-asc', accelerator: 'CmdOrCtrl+Alt+1' }),
+            cmd('Sort Lines As Numbers Descending', 'line-op', { arg: 'sort-num-desc', accelerator: 'CmdOrCtrl+Alt+2' }),
             { type: 'separator' },
-            cmd('Remove Duplicate Lines', 'line-op', { arg: 'remove-dupes' }),
-            cmd('Remove Consecutive Duplicate Lines', 'line-op', { arg: 'remove-consecutive-dupes' }),
-            cmd('Remove Empty Lines', 'line-op', { arg: 'remove-empty' }),
-            cmd('Trim Trailing Whitespace', 'line-op', { arg: 'trim' }),
-            cmd('Reverse Line Order', 'line-op', { arg: 'reverse' }),
-            cmd('Randomize Line Order', 'line-op', { arg: 'randomize' }),
+            cmd('Remove Duplicate Lines', 'line-op', { arg: 'remove-dupes', accelerator: 'CmdOrCtrl+Alt+D' }),
+            cmd('Remove Consecutive Duplicate Lines', 'line-op', { arg: 'remove-consecutive-dupes', accelerator: 'CmdOrCtrl+Alt+Shift+D' }),
+            cmd('Remove Empty Lines', 'line-op', { arg: 'remove-empty', accelerator: 'CmdOrCtrl+Alt+E' }),
+            cmd('Trim Trailing Whitespace', 'line-op', { arg: 'trim', accelerator: 'CmdOrCtrl+Alt+Shift+T' }),
+            cmd('Reverse Line Order', 'line-op', { arg: 'reverse', accelerator: 'CmdOrCtrl+Alt+Shift+B' }),
+            cmd('Randomize Line Order', 'line-op', { arg: 'randomize', accelerator: 'CmdOrCtrl+Alt+Shift+H' }),
           ],
         },
         {
@@ -378,9 +415,9 @@ function buildMenu() {
         {
           label: 'EOL Conversion',
           submenu: [
-            cmd('Windows (CR LF)', 'set-eol', { arg: '\r\n' }),
-            cmd('Unix (LF)', 'set-eol', { arg: '\n' }),
-            cmd('Macintosh (CR)', 'set-eol', { arg: '\r' }),
+            cmd('Windows (CR LF)', 'set-eol', { arg: '\r\n', accelerator: 'CmdOrCtrl+Alt+Shift+1' }),
+            cmd('Unix (LF)', 'set-eol', { arg: '\n', accelerator: 'CmdOrCtrl+Alt+Shift+2' }),
+            cmd('Macintosh (CR)', 'set-eol', { arg: '\r', accelerator: 'CmdOrCtrl+Alt+Shift+3' }),
           ],
         },
       ],
@@ -400,23 +437,23 @@ function buildMenu() {
             cmd('Toggle Bookmark', 'bookmark', { arg: 'toggle', accelerator: 'CmdOrCtrl+F2' }),
             cmd('Next Bookmark', 'bookmark', { arg: 'next', accelerator: 'F2' }),
             cmd('Previous Bookmark', 'bookmark', { arg: 'prev', accelerator: 'Shift+F2' }),
-            cmd('Clear All Bookmarks', 'bookmark', { arg: 'clear' }),
+            cmd('Clear All Bookmarks', 'bookmark', { arg: 'clear', accelerator: 'CmdOrCtrl+Shift+F2' }),
             { type: 'separator' },
-            cmd('Cut Bookmarked Lines', 'bookmark', { arg: 'cut' }),
-            cmd('Copy Bookmarked Lines', 'bookmark', { arg: 'copy' }),
-            cmd('Remove Bookmarked Lines', 'bookmark', { arg: 'remove' }),
-            cmd('Remove Unmarked Lines', 'bookmark', { arg: 'remove-unmarked' }),
-            cmd('Inverse Bookmark', 'bookmark', { arg: 'inverse' }),
+            cmd('Cut Bookmarked Lines', 'bookmark', { arg: 'cut', accelerator: 'Alt+F2' }),
+            cmd('Copy Bookmarked Lines', 'bookmark', { arg: 'copy', accelerator: 'Alt+Shift+F2' }),
+            cmd('Remove Bookmarked Lines', 'bookmark', { arg: 'remove', accelerator: 'CmdOrCtrl+Alt+F2' }),
+            cmd('Remove Unmarked Lines', 'bookmark', { arg: 'remove-unmarked', accelerator: 'CmdOrCtrl+Alt+Shift+F2' }),
+            cmd('Inverse Bookmark', 'bookmark', { arg: 'inverse', accelerator: 'Alt+F3' }),
           ],
         },
         {
           label: 'Change History',
           submenu: [
-            cmd('Go to Next Change', 'change-history', { arg: 'next' }),
-            cmd('Go to Previous Change', 'change-history', { arg: 'prev' }),
-            cmd('Clear Change History', 'change-history', { arg: 'clear' }),
+            cmd('Go to Next Change', 'change-history', { arg: 'next', accelerator: 'F7' }),
+            cmd('Go to Previous Change', 'change-history', { arg: 'prev', accelerator: 'Shift+F7' }),
+            cmd('Clear Change History', 'change-history', { arg: 'clear', accelerator: 'CmdOrCtrl+Shift+F7' }),
             { type: 'separator' },
-            cmd('Toggle Change History Margin', 'change-history', { arg: 'toggle' }),
+            cmd('Toggle Change History Margin', 'change-history', { arg: 'toggle', accelerator: 'CmdOrCtrl+Alt+F7' }),
           ],
         },
         { type: 'separator' },
@@ -426,48 +463,52 @@ function buildMenu() {
     {
       label: 'Encoding',
       submenu: [
-        cmd('Convert to UTF-8', 'set-encoding', { arg: 'utf8' }),
-        cmd('Convert to UTF-8-BOM', 'set-encoding', { arg: 'utf8bom' }),
-        cmd('Convert to UTF-16 LE', 'set-encoding', { arg: 'utf16le' }),
-        cmd('Convert to UTF-16 BE', 'set-encoding', { arg: 'utf16be' }),
-        cmd('Convert to ANSI (Windows-1252)', 'set-encoding', { arg: 'ansi' }),
+        cmd('Convert to UTF-8', 'set-encoding', { arg: 'utf8', accelerator: 'CmdOrCtrl+Alt+Shift+4' }),
+        cmd('Convert to UTF-8-BOM', 'set-encoding', { arg: 'utf8bom', accelerator: 'CmdOrCtrl+Alt+Shift+5' }),
+        cmd('Convert to UTF-16 LE', 'set-encoding', { arg: 'utf16le', accelerator: 'CmdOrCtrl+Alt+Shift+6' }),
+        cmd('Convert to UTF-16 BE', 'set-encoding', { arg: 'utf16be', accelerator: 'CmdOrCtrl+Alt+Shift+7' }),
+        cmd('Convert to ANSI (Windows-1252)', 'set-encoding', { arg: 'ansi', accelerator: 'CmdOrCtrl+Alt+Shift+8' }),
         { type: 'separator' },
         {
           label: 'Reinterpret File As',
           submenu: [
-            cmd('UTF-8', 'reopen-encoding', { arg: 'utf8' }),
-            cmd('UTF-8-BOM', 'reopen-encoding', { arg: 'utf8bom' }),
-            cmd('UTF-16 LE', 'reopen-encoding', { arg: 'utf16le' }),
-            cmd('UTF-16 BE', 'reopen-encoding', { arg: 'utf16be' }),
-            cmd('ANSI (Windows-1252)', 'reopen-encoding', { arg: 'ansi' }),
+            cmd('UTF-8', 'reopen-encoding', { arg: 'utf8', accelerator: 'CmdOrCtrl+Alt+4' }),
+            cmd('UTF-8-BOM', 'reopen-encoding', { arg: 'utf8bom', accelerator: 'CmdOrCtrl+Alt+5' }),
+            cmd('UTF-16 LE', 'reopen-encoding', { arg: 'utf16le', accelerator: 'CmdOrCtrl+Alt+6' }),
+            cmd('UTF-16 BE', 'reopen-encoding', { arg: 'utf16be', accelerator: 'CmdOrCtrl+Alt+7' }),
+            cmd('ANSI (Windows-1252)', 'reopen-encoding', { arg: 'ansi', accelerator: 'CmdOrCtrl+Alt+8' }),
           ],
         },
       ],
     },
     {
       label: 'Language',
-      submenu: languageList.length
-        ? languageList.map(l => cmd(l.name, 'set-language', { arg: l.key }))
-        : [{ label: '(loading)', enabled: false }],
+      submenu: [
+        cmd('Choose Language...', 'language-picker', { accelerator: 'CmdOrCtrl+Alt+L' }),
+        { type: 'separator' },
+        ...(languageList.length
+          ? languageList.map(l => cmd(l.name, 'set-language', { arg: l.key }))
+          : [{ label: '(loading)', enabled: false }]),
+      ],
     },
     {
       label: 'View',
       submenu: [
         cmd('Toggle Toolbar', 'toggle-toolbar', { accelerator: 'CmdOrCtrl+Shift+T' }),
-        cmd('Customize Toolbar...', 'customize-toolbar'),
+        cmd('Customize Toolbar...', 'customize-toolbar', { accelerator: 'CmdOrCtrl+Alt+B' }),
         cmd('Toggle Sidebar', 'toggle-sidebar', { accelerator: 'CmdOrCtrl+B' }),
-        cmd('Toggle Minimap', 'toggle-minimap'),
+        cmd('Toggle Minimap', 'toggle-minimap', { accelerator: 'CmdOrCtrl+Alt+M' }),
         { type: 'separator' },
         {
           label: 'Show Symbol',
           submenu: [
-            cmd('Toggle Show Space and Tab', 'toggle-whitespace'),
-            cmd('Toggle Show End of Line', 'toggle-eol-markers'),
+            cmd('Toggle Show Space and Tab', 'toggle-whitespace', { accelerator: 'CmdOrCtrl+Alt+Space' }),
+            cmd('Toggle Show End of Line', 'toggle-eol-markers', { accelerator: 'CmdOrCtrl+Alt+Shift+Space' }),
           ],
         },
         { type: 'separator' },
-        cmd('Fold All', 'fold-all'),
-        cmd('Unfold All', 'unfold-all'),
+        cmd('Fold All', 'fold-all', { accelerator: 'CmdOrCtrl+Alt+Shift+[' }),
+        cmd('Unfold All', 'unfold-all', { accelerator: 'CmdOrCtrl+Alt+Shift+]' }),
         { type: 'separator' },
         cmd('Toggle Word Wrap', 'toggle-wrap', { accelerator: 'Alt+Z' }),
         { type: 'separator' },
@@ -476,6 +517,7 @@ function buildMenu() {
         cmd('Reset Zoom', 'zoom-reset', { accelerator: 'CmdOrCtrl+0' }),
         { type: 'separator' },
         cmd('Toggle Split View', 'toggle-split', { accelerator: 'CmdOrCtrl+\\' }),
+        cmd('Reset Split to Equal Halves', 'split-reset', { accelerator: 'CmdOrCtrl+Alt+=' }),
         cmd('Focus Other View', 'focus-other-view', { accelerator: 'F8' }),
         { type: 'separator' },
         cmd('Link Map', 'link-map', { accelerator: 'CmdOrCtrl+Shift+M' }),
@@ -485,8 +527,8 @@ function buildMenu() {
           submenu: [
             cmd('Next Tab', 'tab', { arg: 'next', accelerator: 'CmdOrCtrl+Tab', registerAccelerator: false }),
             cmd('Previous Tab', 'tab', { arg: 'prev', accelerator: 'CmdOrCtrl+Shift+Tab', registerAccelerator: false }),
-            cmd('First Tab', 'tab', { arg: 'first' }),
-            cmd('Last Tab', 'tab', { arg: 'last' }),
+            cmd('First Tab', 'tab', { arg: 'first', accelerator: 'Alt+Home' }),
+            cmd('Last Tab', 'tab', { arg: 'last', accelerator: 'Alt+End' }),
             { type: 'separator' },
             cmd('Move Tab Forward', 'tab', { arg: 'move-forward', accelerator: 'CmdOrCtrl+Shift+PageDown', registerAccelerator: false }),
             cmd('Move Tab Backward', 'tab', { arg: 'move-backward', accelerator: 'CmdOrCtrl+Shift+PageUp', registerAccelerator: false }),
@@ -501,19 +543,32 @@ function buildMenu() {
           label: 'Always on Top',
           type: 'checkbox',
           checked: false,
+          accelerator: 'CmdOrCtrl+Alt+P',
           click: (item) => { if (mainWindow) mainWindow.setAlwaysOnTop(item.checked); },
         },
         { type: 'separator' },
-        cmd('Toggle Theme (Dark/Light)', 'toggle-theme'),
+        cmd('Toggle Theme (Dark/Light)', 'toggle-theme', { accelerator: 'CmdOrCtrl+Alt+Shift+Y' }),
         { type: 'separator' },
         { label: 'Toggle Dev Tools', accelerator: 'F12', role: 'toggleDevTools' },
       ],
     },
     {
+      label: 'Tools',
+      submenu: [
+        cmd('Toggle Prose Mode (Grammarly)', 'toggle-prose', { accelerator: 'CmdOrCtrl+Alt+Shift+P' }),
+        cmd('Check Grammar', 'grammar-check', { accelerator: 'CmdOrCtrl+Alt+G' }),
+        cmd('Compare With File...', 'compare', { accelerator: 'CmdOrCtrl+Alt+C' }),
+      ],
+    },
+    {
       label: 'Help',
       submenu: [
+        cmd('Keyboard Shortcuts...', 'shortcuts', { accelerator: 'F1' }),
+        cmd('Command Palette...', 'command-palette', { accelerator: 'CmdOrCtrl+Shift+P' }),
+        { type: 'separator' },
         {
           label: 'About NotepadPlus',
+          accelerator: 'CmdOrCtrl+F1',
           click: () => {
             dialog.showMessageBox(mainWindow, {
               type: 'info',
@@ -526,6 +581,7 @@ function buildMenu() {
         { type: 'separator' },
         {
           label: 'Grammarly',
+          accelerator: 'Shift+F1',
           click: () => {
             dialog.showMessageBox(mainWindow, {
               type: 'info',
@@ -537,7 +593,33 @@ function buildMenu() {
         },
       ],
     },
-  ]);
+  ];
+}
+
+// Menu items without a command name (Open, Open Folder, Exit, About,
+// Grammarly, Always on Top, Dev Tools) are run here by label when the
+// renderer's palette picks them.
+function runNativeMenuItem(label) {
+  const appMenu = Menu.getApplicationMenu();
+  if (!appMenu) return false;
+  const roleActions = {
+    cut: () => mainWindow.webContents.cut(),
+    copy: () => mainWindow.webContents.copy(),
+    paste: () => mainWindow.webContents.paste(),
+    selectAll: () => mainWindow.webContents.selectAll(),
+    toggleDevTools: () => mainWindow.webContents.toggleDevTools(),
+  };
+  const walk = (items) => {
+    for (const item of items) {
+      if (item.submenu) { if (walk(item.submenu.items)) return true; continue; }
+      if (item.label !== label) continue;
+      if (item.role && mainWindow && roleActions[item.role]) { roleActions[item.role](); return true; }
+      if (item.type === 'checkbox') item.checked = !item.checked;
+      if (typeof item.click === 'function') { item.click(item, mainWindow, {}); return true; }
+    }
+    return false;
+  };
+  return walk(appMenu.items);
 }
 
 function createWindow() {
@@ -578,6 +660,7 @@ function createWindow() {
 
   mainWindow.webContents.on('did-finish-load', () => {
     rendererReady = true;
+    sendMenuTemplate();
     const session = loadSession();
     if (session) {
       mainWindow.webContents.send('restore-session', session);
@@ -675,7 +758,39 @@ ipcMain.on('language-list', (event, list) => {
   if (Array.isArray(list)) {
     languageList = list.filter(l => l && typeof l.key === 'string' && typeof l.name === 'string');
     Menu.setApplicationMenu(buildMenu());
+    sendMenuTemplate();
   }
+});
+
+ipcMain.on('run-native-menu-item', (event, label) => {
+  if (typeof label === 'string') runNativeMenuItem(label);
+});
+
+// Keyboard-opened context menu (Shift+F10 / Menu key). The native
+// right-click menu gets spelling suggestions from Chromium; this one
+// cannot, so it offers the edit actions and Add to Dictionary for the
+// word under the caret.
+ipcMain.on('show-context-menu', (event, params) => {
+  if (!mainWindow) return;
+  const p = params && typeof params === 'object' ? params : {};
+  const word = typeof p.word === 'string' ? p.word.slice(0, 100) : '';
+  const items = [
+    { label: 'Cut', role: 'cut' },
+    { label: 'Copy', role: 'copy' },
+    { label: 'Paste', role: 'paste' },
+    { type: 'separator' },
+    { label: 'Select All', role: 'selectAll' },
+  ];
+  if (word && /^[\p{L}\p{M}'’-]+$/u.test(word)) {
+    items.push({ type: 'separator' });
+    items.push({
+      label: `Add "${word}" to Dictionary`,
+      click: () => mainWindow.webContents.session.addWordToSpellCheckerDictionary(word),
+    });
+  }
+  const x = Number.isFinite(p.x) ? Math.round(p.x) : undefined;
+  const y = Number.isFinite(p.y) ? Math.round(p.y) : undefined;
+  Menu.buildFromTemplate(items).popup({ window: mainWindow, x, y });
 });
 
 ipcMain.handle('file-rename', async (event, { oldPath, newPath }) => {

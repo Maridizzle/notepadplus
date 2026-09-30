@@ -1509,17 +1509,63 @@ function showPopupMenu(x, y, items) {
   if (rect.right > window.innerWidth) menu.style.left = Math.max(0, window.innerWidth - rect.width - 4) + 'px';
   if (rect.bottom > window.innerHeight) menu.style.top = Math.max(0, window.innerHeight - rect.height - 4) + 'px';
 
-  const dismiss = (ev) => {
-    if (ev.type === 'keydown' && ev.key !== 'Escape') return;
-    if (ev.type === 'mousedown' && menu.contains(ev.target)) return;
-    hideTabContextMenu();
+  // Keyboard operation: arrows, Home/End, type-ahead, Enter, Escape.
+  const entries = Array.from(menu.querySelectorAll('.ctx-item:not(.disabled)'));
+  let active = Math.max(0, entries.findIndex(el => el.classList.contains('checked')));
+  const setActive = (i) => {
+    if (!entries.length) return;
+    active = (i + entries.length) % entries.length;
+    entries.forEach((el, k) => el.classList.toggle('active', k === active));
+    entries[active].scrollIntoView({ block: 'nearest' });
+  };
+  let typed = '';
+  let typedTimer = null;
+  const typeAhead = (ch) => {
+    clearTimeout(typedTimer);
+    typed += ch.toLowerCase();
+    typedTimer = setTimeout(() => { typed = ''; }, 800);
+    const start = typed.length === 1 ? active + 1 : active;
+    for (let k = 0; k < entries.length; k++) {
+      const idx = (start + k) % entries.length;
+      if (entries[idx].textContent.toLowerCase().startsWith(typed)) { setActive(idx); return; }
+    }
+  };
+
+  const removeListeners = () => {
+    clearTimeout(typedTimer);
     document.removeEventListener('mousedown', dismiss, true);
-    document.removeEventListener('keydown', dismiss, true);
+    document.removeEventListener('keydown', onKey, true);
     window.removeEventListener('blur', dismiss);
   };
+  const cleanup = () => {
+    hideTabContextMenu();
+    removeListeners();
+  };
+  const dismiss = (ev) => {
+    if (ev.type === 'mousedown' && menu.contains(ev.target)) return;
+    cleanup();
+  };
+  const onKey = (ev) => {
+    if (ev.key === 'Escape') { ev.preventDefault(); cleanup(); return; }
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); setActive(active + 1); return; }
+    if (ev.key === 'ArrowUp') { ev.preventDefault(); setActive(active - 1); return; }
+    if (ev.key === 'Home') { ev.preventDefault(); setActive(0); return; }
+    if (ev.key === 'End') { ev.preventDefault(); setActive(entries.length - 1); return; }
+    if (ev.key === 'Enter' || ev.key === ' ') {
+      ev.preventDefault();
+      removeListeners();
+      if (entries[active]) entries[active].click(); else hideTabContextMenu();
+      return;
+    }
+    if (ev.key.length === 1 && !ev.ctrlKey && !ev.altKey && !ev.metaKey) { ev.preventDefault(); typeAhead(ev.key); return; }
+    if (ev.key === 'Tab') { ev.preventDefault(); }
+  };
+  // A mouse pick also ends keyboard capture.
+  menu.addEventListener('click', removeListeners, true);
   document.addEventListener('mousedown', dismiss, true);
-  document.addEventListener('keydown', dismiss, true);
+  document.addEventListener('keydown', onKey, true);
   window.addEventListener('blur', dismiss);
+  setActive(active);
 }
 
 function showStatusMenu(anchorEl, items) {
@@ -3285,6 +3331,9 @@ function transformText(type) {
     case 'propercase':
       result = selected.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
       break;
+    case 'titlecase':
+      result = titleCase(selected);
+      break;
     case 'sentencecase':
       result = selected.toLowerCase().replace(/(^\s*\w|[.!?]\s+\w)/g, m => m.toUpperCase());
       break;
@@ -3306,6 +3355,25 @@ function transformText(type) {
       return;
   }
   view.dispatch({ changes: { from, to, insert: result } });
+}
+
+// Title Case: capitalize every word except short joining words, which
+// stay lowercase unless they open or close a line.
+const TITLE_SMALL_WORDS = new Set(['a', 'an', 'the', 'and', 'but', 'or', 'nor', 'for', 'of', 'on', 'in', 'at', 'to', 'by']);
+
+function titleCase(text) {
+  return text.split('\n').map(line => {
+    const words = line.toLowerCase().split(/(\s+)/);
+    const wordIdx = words.map((w, i) => (i % 2 === 0 && w ? i : -1)).filter(i => i >= 0);
+    const first = wordIdx[0];
+    const last = wordIdx[wordIdx.length - 1];
+    return words.map((w, i) => {
+      if (i % 2 === 1 || !w) return w;
+      const bare = w.replace(/[^\p{L}\p{N}']/gu, '');
+      if (TITLE_SMALL_WORDS.has(bare) && i !== first && i !== last) return w;
+      return w.replace(/\p{L}/u, c => c.toUpperCase());
+    }).join('');
+  }).join('\n');
 }
 
 // Line operations
@@ -3784,6 +3852,38 @@ function initSplitGutter() {
   });
 }
 
+// Shift+F10 / Menu key: open the edit context menu at the caret.
+function openKeyboardContextMenu() {
+  if (!window.electronAPI || !window.electronAPI.showContextMenu) return;
+  let x, y, word = '';
+  const prose = document.getElementById('prose-editor');
+  if (proseMode && document.activeElement === prose) {
+    const r = prose.getBoundingClientRect();
+    x = r.left + 40; y = r.top + 40;
+    const text = prose.value;
+    const pos = prose.selectionStart;
+    const before = /[\p{L}\p{M}'’-]*$/u.exec(text.slice(0, pos));
+    const after = /^[\p{L}\p{M}'’-]*/u.exec(text.slice(pos));
+    word = (before ? before[0] : '') + (after ? after[0] : '');
+  } else {
+    const view = activeView();
+    if (!view) return;
+    const head = view.state.selection.main.head;
+    const coords = view.coordsAtPos(head);
+    if (coords) { x = coords.left; y = coords.bottom; }
+    else { const r = view.dom.getBoundingClientRect(); x = r.left + 40; y = r.top + 40; }
+    const w = view.state.wordAt(head);
+    if (w) word = view.state.sliceDoc(w.from, w.to);
+  }
+  window.electronAPI.showContextMenu({ x: Math.round(x), y: Math.round(y), word });
+}
+
+function resetSplitDivider() {
+  if (!splitView && !compareMode) return;
+  document.getElementById('editor').style.width = '';
+  document.getElementById('prose-editor').style.width = '';
+}
+
 let pendingCompare = false;
 
 function openCompare() {
@@ -4077,9 +4177,17 @@ const commands = {
   'zoom-out': () => setFontSize(fontSize - 2),
   'zoom-reset': () => setFontSize(14),
   'toggle-split': () => toggleSplitView(),
+  'split-reset': () => resetSplitDivider(),
   'focus-other-view': () => focusOtherView(),
   'tab': (action) => tabCommand(action),
   'toggle-theme': () => toggleTheme(),
+  'language-picker': () => showLanguageMenu(document.getElementById('status-lang')),
+  'shortcuts': () => showShortcutsDialog(),
+  'command-palette': () => showCommandPalette(),
+  'context-menu': () => openKeyboardContextMenu(),
+  'toggle-prose': () => toggleProseMode(),
+  'grammar-check': () => runGrammarCheck(),
+  'compare': () => openCompare(),
 };
 
 function runCommand(name, arg) {
@@ -4120,6 +4228,7 @@ const TOOLBAR_CATALOG = [
     { id: 'upper', label: 'UPPER', title: 'UPPERCASE', cmd: 'transform', arg: 'uppercase' },
     { id: 'lower', label: 'lower', title: 'lowercase', cmd: 'transform', arg: 'lowercase' },
     { id: 'proper', label: 'Proper', title: 'Proper Case', cmd: 'transform', arg: 'propercase' },
+    { id: 'title', label: 'Title', title: 'Title Case', cmd: 'transform', arg: 'titlecase' },
     { id: 'sentence', label: 'Sentence', title: 'Sentence case', cmd: 'transform', arg: 'sentencecase' },
     { id: 'invert', label: 'iNVERT', title: 'iNVERT cASE', cmd: 'transform', arg: 'invertcase' },
     { id: 'random', label: 'ranDOm', title: 'ranDOm CasE', cmd: 'transform', arg: 'randomcase' },
@@ -4190,6 +4299,7 @@ const TOOLBAR_CATALOG = [
     { id: 'toggle-whitespace', label: 'Spaces', title: 'Toggle Show Space and Tab', cmd: 'toggle-whitespace' },
     { id: 'toggle-eol-markers', label: 'EOL Marks', title: 'Toggle Show End of Line', cmd: 'toggle-eol-markers' },
     { id: 'toggle-split', label: 'Split', title: 'Toggle Split View', cmd: 'toggle-split' },
+    { id: 'split-reset', label: 'Even Split', title: 'Reset Split to Equal Halves', cmd: 'split-reset' },
     { id: 'focus-other-view', label: 'Other Pane', title: 'Focus Other View', cmd: 'focus-other-view' },
     { id: 'btn-link-map', label: 'Map' },
     { id: 'tab-next', label: 'Next Tab', cmd: 'tab', arg: 'next' },
@@ -4203,6 +4313,8 @@ const TOOLBAR_CATALOG = [
     { id: 'btn-prose', label: 'Prose' },
     { id: 'btn-grammar', label: 'Grammar' },
     { id: 'btn-compare', label: 'Compare' },
+    { id: 'command-palette', label: 'Palette', title: 'Command Palette', cmd: 'command-palette' },
+    { id: 'shortcuts', label: 'Keys', title: 'Keyboard Shortcuts', cmd: 'shortcuts' },
   ] },
 ];
 
@@ -4763,6 +4875,11 @@ function initFindInFiles() {
 
 function initTabShortcuts() {
   document.addEventListener('keydown', (e) => {
+    if ((e.key === 'F10' && e.shiftKey) || e.key === 'ContextMenu') {
+      e.preventDefault();
+      openKeyboardContextMenu();
+      return;
+    }
     if (!e.ctrlKey || e.altKey || e.metaKey) return;
     if (e.key === 'Tab') {
       e.preventDefault();
@@ -4875,6 +4992,9 @@ function wireEvents() {
     });
 
     window.electronAPI.onMenuCommand((name, arg) => runCommand(name, arg));
+    if (window.electronAPI.onMenuTemplate) {
+      window.electronAPI.onMenuTemplate((items) => setMenuItems(items));
+    }
 
     window.electronAPI.onRestoreSession((session) => {
       restoreSession(session);
@@ -4913,9 +5033,218 @@ function wireEvents() {
   });
 }
 
+// Command palette and shortcut reference. The main process sends the
+// flattened menu (label, path, command, arg, accelerator) whenever it
+// rebuilds; editor-level bindings and pane commands are added here.
+let menuItems = [];
+
+const EDITOR_BINDINGS = [
+  ['Select next occurrence of selection', 'Ctrl+D'],
+  ['Select all occurrences of selection', 'Ctrl+Shift+L'],
+  ['Select line', 'Alt+L'],
+  ['Select enclosing syntax', 'Ctrl+I'],
+  ['Add cursor above / below', 'Ctrl+Alt+Up / Down'],
+  ['Copy line up / down', 'Shift+Alt+Up / Down'],
+  ['Indent less / more', 'Ctrl+[ / Ctrl+]'],
+  ['Fold / unfold at cursor', 'Ctrl+Alt+[ / Ctrl+Alt+]'],
+  ['Jump to matching bracket', 'Ctrl+Shift+\\'],
+  ['Find next / previous', 'F3 / Shift+F3'],
+  ['Autocomplete', 'Ctrl+Space'],
+  ['Insert blank line below', 'Ctrl+Enter'],
+  ['Column (rectangular) selection', 'Alt + drag'],
+  ['Multiple cursors', 'Ctrl + click'],
+  ['Open context menu at caret', 'Shift+F10 or Menu key'],
+];
+
+function setMenuItems(items) {
+  menuItems = Array.isArray(items) ? items.filter(i => i && i.label) : [];
+}
+
+function formatAccelerator(acc) {
+  if (!acc) return '';
+  const isMac = navigator.platform.toUpperCase().includes('MAC');
+  return acc
+    .replace(/CmdOrCtrl|CommandOrControl/g, isMac ? 'Cmd' : 'Ctrl')
+    .replace(/\bPlus\b/g, '+')
+    .replace(/\bLeft\b/, 'Left').replace(/\bRight\b/, 'Right');
+}
+
+function paletteEntries() {
+  return menuItems.map(item => ({
+    label: item.label,
+    path: item.path.join(' > '),
+    key: formatAccelerator(item.accelerator),
+    run: () => {
+      if (item.name) runCommand(item.name, item.arg);
+      else if (window.electronAPI && window.electronAPI.runNativeMenuItem) window.electronAPI.runNativeMenuItem(item.native);
+    },
+  }));
+}
+
+function scoreEntry(entry, query) {
+  const hay = (entry.path + ' ' + entry.label).toLowerCase();
+  const label = entry.label.toLowerCase();
+  if (!query) return 1;
+  if (label.startsWith(query)) return 4;
+  if (label.includes(query)) return 3;
+  if (hay.includes(query)) return 2;
+  // Every word of the query appears somewhere, in any order.
+  const words = query.split(/\s+/).filter(Boolean);
+  if (words.length > 1 && words.every(w => hay.includes(w))) return 1;
+  return 0;
+}
+
+let paletteActive = 0;
+let paletteShown = [];
+
+function renderPalette() {
+  const list = document.getElementById('palette-list');
+  const q = document.getElementById('palette-input').value.trim().toLowerCase();
+  paletteShown = paletteEntries()
+    .map(e => ({ e, s: scoreEntry(e, q) }))
+    .filter(x => x.s > 0)
+    .sort((a, b) => b.s - a.s)
+    .map(x => x.e);
+  list.textContent = '';
+  if (!paletteShown.length) {
+    const empty = document.createElement('div');
+    empty.className = 'palette-empty';
+    empty.textContent = menuItems.length ? 'No matching command.' : 'Command list not loaded yet.';
+    list.appendChild(empty);
+    return;
+  }
+  paletteActive = Math.min(paletteActive, paletteShown.length - 1);
+  paletteShown.forEach((entry, i) => {
+    const el = document.createElement('div');
+    el.className = 'palette-item' + (i === paletteActive ? ' active' : '');
+    const path = document.createElement('span');
+    path.className = 'p-path';
+    path.textContent = entry.path;
+    const label = document.createElement('span');
+    label.className = 'p-label';
+    label.textContent = entry.label;
+    const key = document.createElement('span');
+    key.className = 'p-key';
+    key.textContent = entry.key;
+    el.append(path, label, key);
+    el.addEventListener('mousemove', () => { if (paletteActive !== i) { paletteActive = i; renderPalette(); } });
+    el.addEventListener('click', () => runPaletteEntry(i));
+    list.appendChild(el);
+  });
+  const activeEl = list.children[paletteActive];
+  if (activeEl) activeEl.scrollIntoView({ block: 'nearest' });
+}
+
+function runPaletteEntry(i) {
+  const entry = paletteShown[i];
+  hideCommandPalette();
+  if (entry) entry.run();
+}
+
+function showCommandPalette() {
+  const dialog = document.getElementById('palette-dialog');
+  const input = document.getElementById('palette-input');
+  dialog.classList.remove('hidden');
+  input.value = '';
+  paletteActive = 0;
+  renderPalette();
+  input.focus();
+}
+
+function hideCommandPalette() {
+  document.getElementById('palette-dialog').classList.add('hidden');
+  const v = activeView();
+  if (v) v.focus();
+}
+
+function initCommandPalette() {
+  const dialog = document.getElementById('palette-dialog');
+  const input = document.getElementById('palette-input');
+  input.addEventListener('input', () => { paletteActive = 0; renderPalette(); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); paletteActive = Math.min(paletteActive + 1, paletteShown.length - 1); renderPalette(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); paletteActive = Math.max(paletteActive - 1, 0); renderPalette(); }
+    else if (e.key === 'PageDown') { e.preventDefault(); paletteActive = Math.min(paletteActive + 10, paletteShown.length - 1); renderPalette(); }
+    else if (e.key === 'PageUp') { e.preventDefault(); paletteActive = Math.max(paletteActive - 10, 0); renderPalette(); }
+    else if (e.key === 'Enter') { e.preventDefault(); runPaletteEntry(paletteActive); }
+    else if (e.key === 'Escape') { e.preventDefault(); hideCommandPalette(); }
+  });
+  dialog.addEventListener('click', (e) => { if (e.target === dialog) hideCommandPalette(); });
+}
+
+function shortcutRows() {
+  const rows = [];
+  for (const item of menuItems) {
+    if (!item.accelerator) continue;
+    rows.push({ group: item.path[0] || 'Menu', label: [...item.path.slice(1), item.label].join(' > '), key: formatAccelerator(item.accelerator) });
+  }
+  for (const [label, key] of EDITOR_BINDINGS) rows.push({ group: 'Editor', label, key });
+  return rows;
+}
+
+function renderShortcuts() {
+  const list = document.getElementById('shortcuts-list');
+  const q = document.getElementById('shortcuts-filter').value.trim().toLowerCase();
+  list.textContent = '';
+  const rows = shortcutRows().filter(r => !q || (r.group + ' ' + r.label + ' ' + r.key).toLowerCase().includes(q));
+  const groups = new Map();
+  for (const r of rows) { if (!groups.has(r.group)) groups.set(r.group, []); groups.get(r.group).push(r); }
+  if (!rows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'palette-empty';
+    empty.textContent = 'No matching shortcut.';
+    list.appendChild(empty);
+    return;
+  }
+  for (const [group, items] of groups) {
+    const g = document.createElement('div');
+    g.className = 'sc-group';
+    const h = document.createElement('h4');
+    h.textContent = group;
+    g.appendChild(h);
+    for (const r of items) {
+      const row = document.createElement('div');
+      row.className = 'sc-row';
+      const l = document.createElement('span');
+      l.textContent = r.label;
+      const k = document.createElement('span');
+      k.className = 'sc-key';
+      k.textContent = r.key;
+      row.append(l, k);
+      g.appendChild(row);
+    }
+    list.appendChild(g);
+  }
+}
+
+function showShortcutsDialog() {
+  const dialog = document.getElementById('shortcuts-dialog');
+  const input = document.getElementById('shortcuts-filter');
+  dialog.classList.remove('hidden');
+  input.value = '';
+  renderShortcuts();
+  input.focus();
+}
+
+function hideShortcutsDialog() {
+  document.getElementById('shortcuts-dialog').classList.add('hidden');
+  const v = activeView();
+  if (v) v.focus();
+}
+
+function initShortcutsDialog() {
+  const dialog = document.getElementById('shortcuts-dialog');
+  document.getElementById('shortcuts-filter').addEventListener('input', renderShortcuts);
+  document.getElementById('shortcuts-close').addEventListener('click', hideShortcutsDialog);
+  dialog.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); hideShortcutsDialog(); } });
+  dialog.addEventListener('click', (e) => { if (e.target === dialog) hideShortcutsDialog(); });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   initEditor();
   wireEvents();
+  initCommandPalette();
+  initShortcutsDialog();
   setEditorFont(document.getElementById('font-select').value);
   initSidebarTabs();
   initSidebarResize();
