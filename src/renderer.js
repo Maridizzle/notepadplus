@@ -1042,14 +1042,24 @@ let focusedPane = 'left';
 
 const fontCompartment = new Compartment();
 
-function paneTheme(fontFamily, bgColor) {
+function paneTheme(fontFamily) {
   const spec = {};
   if (fontFamily) spec['.cm-content, .cm-gutters'] = { fontFamily };
-  if (bgColor) {
-    spec['&'] = { backgroundColor: bgColor };
-    spec['.cm-gutters'] = { backgroundColor: bgColor };
-  }
   return Object.keys(spec).length ? EditorView.theme(spec) : [];
+}
+
+// The chosen background goes on the editor element as inline CSS
+// variables, which the stylesheet's editor and gutter rules read. Inline
+// beats any stylesheet rule, including the editor's own theme sheet.
+function applyPaneBackground(view, color) {
+  if (!view) return;
+  if (color) {
+    view.dom.style.setProperty('--paper', color);
+    view.dom.style.setProperty('--gutter-bg', color);
+  } else {
+    view.dom.style.removeProperty('--paper');
+    view.dom.style.removeProperty('--gutter-bg');
+  }
 }
 
 const DEFAULT_EOL = '\r\n';
@@ -1204,7 +1214,7 @@ function applyEditorSettings() {
   editorView.dispatch({
     effects: [
       wrapCompartment.reconfigure(wordWrap ? EditorView.lineWrapping : []),
-      fontCompartment.reconfigure(paneTheme(currentFontFamily, leftBgColor)),
+      fontCompartment.reconfigure(paneTheme(currentFontFamily)),
       themeCompartment.reconfigure(isDarkTheme ? oneDark : []),
       whitespaceCompartment.reconfigure(whitespaceExt()),
       eolCompartment.reconfigure(showEol ? eolMarkerPlugin(mainEolLabel) : []),
@@ -2334,7 +2344,7 @@ function mainExtensions() {
     highlightActiveLine(),
     highlightSelectionMatches(),
     wrapCompartment.of(wordWrap ? EditorView.lineWrapping : []),
-    fontCompartment.of(paneTheme(currentFontFamily, leftBgColor)),
+    fontCompartment.of(paneTheme(currentFontFamily)),
     whitespaceCompartment.of(whitespaceExt()),
     eolCompartment.of(showEol ? eolMarkerPlugin(mainEolLabel) : []),
     wikiLinkPlugin,
@@ -2924,10 +2934,12 @@ function applySettings(s) {
 
 function applyPaneThemes() {
   editorView.dispatch({
-    effects: fontCompartment.reconfigure(paneTheme(currentFontFamily, leftBgColor)),
+    effects: fontCompartment.reconfigure(paneTheme(currentFontFamily)),
   });
+  applyPaneBackground(editorView, leftBgColor);
   for (const p of openPanes()) {
-    p.view.dispatch({ effects: splitFontCompartment.reconfigure(paneTheme(currentFontFamily, rightBgColor)) });
+    p.view.dispatch({ effects: splitFontCompartment.reconfigure(paneTheme(currentFontFamily)) });
+    applyPaneBackground(p.view, rightBgColor);
   }
 }
 
@@ -3762,7 +3774,7 @@ function createSplitEditor(content, langExt, mode, pane = currentPane()) {
     highlightSelectionMatches(),
     splitLanguageCompartment.of(langExt),
     splitWrapCompartment.of(wordWrap ? EditorView.lineWrapping : []),
-    splitFontCompartment.of(paneTheme(currentFontFamily, rightBgColor)),
+    splitFontCompartment.of(paneTheme(currentFontFamily)),
     splitWhitespaceCompartment.of(whitespaceExt()),
     splitEolCompartment.of(showEol ? eolMarkerPlugin(() => paneEolLabel(pane)) : []),
     wikiLinkPlugin,
@@ -3840,6 +3852,7 @@ function createSplitEditor(content, langExt, mode, pane = currentPane()) {
     parent: pane.el,
   });
 
+  applyPaneBackground(pane.view, rightBgColor);
   applyFontSize();
   return pane.view;
 }
