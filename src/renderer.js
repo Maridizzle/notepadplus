@@ -402,8 +402,8 @@ function changeHistoryExtensions(compartment) {
 function toggleChangeHistory() {
   showChangeHistory = !showChangeHistory;
   editorView.dispatch({ effects: changeHistoryCompartment.reconfigure(showChangeHistory ? changeHistoryGutter : []) });
-  if (splitEditorView) {
-    splitEditorView.dispatch({ effects: splitChangeHistoryCompartment.reconfigure(showChangeHistory ? changeHistoryGutter : []) });
+  for (const p of openPanes()) {
+    p.view.dispatch({ effects: splitChangeHistoryCompartment.reconfigure(showChangeHistory ? changeHistoryGutter : []) });
   }
 }
 
@@ -414,8 +414,8 @@ function markTabHistorySaved(tab) {
   } else if (tab.state) {
     tab.state = tab.state.update({ effects: effect }).state;
   }
-  if (splitEditorView && ((splitMode === 'tab' && splitTabId === tab.id) || (splitMode === 'clone' && tab.id === activeTabId))) {
-    splitEditorView.dispatch({ effects: effect });
+  for (const p of openPanes()) {
+    if ((p.mode === 'tab' && p.tabId === tab.id) || (p.mode === 'clone' && tab.id === activeTabId)) p.view.dispatch({ effects: effect });
   }
 }
 
@@ -829,6 +829,7 @@ function renderCloserResults() {
     }
     container.appendChild(item);
   }
+  listRendered('closer-results');
 }
 
 function jumpToPos(view, pos) {
@@ -985,14 +986,6 @@ function mainEolLabel() {
   return eolLabel(tab ? tab.eol : DEFAULT_EOL);
 }
 
-function splitEolLabel() {
-  if (splitMode === 'file') return eolLabel(splitEol);
-  if (splitMode === 'tab') {
-    const tab = tabs.find(t => t.id === splitTabId);
-    if (tab) return eolLabel(tab.eol);
-  }
-  return mainEolLabel();
-}
 
 function whitespaceExt() {
   return showWhitespace ? highlightWhitespace() : [];
@@ -1001,8 +994,8 @@ function whitespaceExt() {
 function toggleShowWhitespace() {
   showWhitespace = !showWhitespace;
   editorView.dispatch({ effects: whitespaceCompartment.reconfigure(whitespaceExt()) });
-  if (splitEditorView) {
-    splitEditorView.dispatch({ effects: splitWhitespaceCompartment.reconfigure(whitespaceExt()) });
+  for (const p of openPanes()) {
+    p.view.dispatch({ effects: splitWhitespaceCompartment.reconfigure(whitespaceExt()) });
   }
 }
 
@@ -1011,9 +1004,9 @@ function toggleShowEol() {
   editorView.dispatch({
     effects: eolCompartment.reconfigure(showEol ? eolMarkerPlugin(mainEolLabel) : []),
   });
-  if (splitEditorView) {
-    splitEditorView.dispatch({
-      effects: splitEolCompartment.reconfigure(showEol ? eolMarkerPlugin(splitEolLabel) : []),
+  for (const p of openPanes()) {
+    p.view.dispatch({
+      effects: splitEolCompartment.reconfigure(showEol ? eolMarkerPlugin(() => paneEolLabel(p)) : []),
     });
   }
 }
@@ -1021,7 +1014,7 @@ function toggleShowEol() {
 function refreshEolMarkers() {
   if (!showEol) return;
   editorView.dispatch({ effects: refreshDecorations.of(null) });
-  if (splitEditorView) splitEditorView.dispatch({ effects: refreshDecorations.of(null) });
+  for (const p of openPanes()) p.view.dispatch({ effects: refreshDecorations.of(null) });
 }
 
 let tabs = [];
@@ -1038,7 +1031,7 @@ function hasRefreshEffect(update) {
 }
 
 function activeView() {
-  return focusedPane === 'right' && splitEditorView ? splitEditorView : editorView;
+  return focusedPane === 'right' && sp.view ? sp.view : editorView;
 }
 let wordWrap = false;
 let currentFontFamily = null;
@@ -1341,7 +1334,7 @@ async function closeTab(id) {
 
   if (tab.autoSaveTimer) clearTimeout(tab.autoSaveTimer);
   tabs.splice(idx, 1);
-  if (splitMode === 'tab' && splitTabId === id) hideSplitLayout();
+  for (const p of panesShowingTab(id)) vacatePane(p);
 
   if (tabs.length === 0) {
     createTab(null, '');
@@ -1385,7 +1378,7 @@ function renderTabs() {
     el.appendChild(close);
 
     el.addEventListener('click', () => {
-      if (focusedPane === 'right' && splitView && splitMode !== 'compare') {
+      if (focusedPane === 'right' && splitView && sp.mode !== 'compare') {
         loadTabIntoSplitPane(tab);
       } else {
         switchToTab(tab.id);
@@ -1640,7 +1633,9 @@ async function saveAllTabs() {
   for (const tab of tabs.filter(t => t.modified)) {
     if (!(await saveTab(tab))) return false;
   }
-  if (splitMode === 'file' && splitModified) return saveSplitFile();
+  for (const p of openPanes()) {
+    if (p.mode === 'file' && p.modified && !(await saveSplitFile({}, p))) return false;
+  }
   return true;
 }
 
@@ -1694,26 +1689,17 @@ async function reloadTab(tab, encoding) {
     if (proseMode) document.getElementById('prose-editor').value = content;
     refreshSplitClone();
   }
-  if (splitMode === 'tab' && splitTabId === tab.id && splitEditorView) {
-    syncingSplit = true;
-    try {
-      splitEditorView.dispatch({
-        changes: { from: 0, to: splitEditorView.state.doc.length, insert: content },
-      });
-    } finally {
-      syncingSplit = false;
-    }
-  }
+  for (const p of panesShowingTab(tab.id)) replacePaneDoc(p, content);
   renderTabs();
   updateStatusBar();
   refreshEolMarkers();
 }
 
 async function reloadSplitFile(encoding) {
-  if (!splitEditorView || !splitFilePath) return;
-  if (splitModified) {
+  if (!sp.view || !sp.filePath) return;
+  if (sp.modified) {
     const choice = await confirmAction({
-      message: `Reload ${getFileName(splitFilePath)} from disk?`,
+      message: `Reload ${getFileName(sp.filePath)} from disk?`,
       detail: 'Unsaved changes in this document will be lost.',
       buttons: ['Reload', 'Cancel'],
       defaultId: 1,
@@ -1721,26 +1707,26 @@ async function reloadSplitFile(encoding) {
     });
     if (choice !== 0) return;
   }
-  const result = await window.electronAPI.readFile({ filePath: splitFilePath, encoding });
+  const result = await window.electronAPI.readFile({ filePath: sp.filePath, encoding });
   if (!result.success) {
-    reportSaveError(splitFilePath, result.error);
+    reportSaveError(sp.filePath, result.error);
     return;
   }
   const content = normalizeNewlines(result.content);
-  splitEol = detectEol(result.content);
-  splitSavedEol = splitEol;
-  splitEncoding = result.encoding || 'utf8';
-  splitSavedEncoding = splitEncoding;
-  splitSavedContent = content;
+  sp.eol = detectEol(result.content);
+  sp.savedEol = sp.eol;
+  sp.encoding = result.encoding || 'utf8';
+  sp.savedEncoding = sp.encoding;
+  sp.savedContent = content;
   syncingSplit = true;
   try {
-    splitEditorView.dispatch({
-      changes: { from: 0, to: splitEditorView.state.doc.length, insert: content },
+    sp.view.dispatch({
+      changes: { from: 0, to: sp.view.state.doc.length, insert: content },
     });
   } finally {
     syncingSplit = false;
   }
-  splitModified = false;
+  sp.modified = false;
   updateStatusBar();
   refreshEolMarkers();
 }
@@ -1748,7 +1734,7 @@ async function reloadSplitFile(encoding) {
 function reloadCurrent(encoding) {
   const target = rightPaneTarget();
   if (target === 'file') return reloadSplitFile(encoding);
-  if (target === 'tab') return reloadTab(tabs.find(t => t.id === splitTabId), encoding);
+  if (target === 'tab') return reloadTab(tabs.find(t => t.id === sp.tabId), encoding);
   return reloadTab(getActiveTab(), encoding);
 }
 
@@ -1756,13 +1742,13 @@ function setEncoding(enc) {
   if (!ENCODING_LABELS[enc]) return;
   const target = rightPaneTarget();
   if (target === 'file') {
-    splitEncoding = enc;
-    splitModified = computeSplitModified();
-    if (splitModified) scheduleSplitAutoSave();
+    sp.encoding = enc;
+    sp.modified = computeSplitModified();
+    if (sp.modified) scheduleSplitAutoSave();
     updateStatusBar();
     return;
   }
-  const tab = target === 'tab' ? tabs.find(t => t.id === splitTabId) : getActiveTab();
+  const tab = target === 'tab' ? tabs.find(t => t.id === sp.tabId) : getActiveTab();
   if (!tab) return;
   tab.encoding = enc;
   refreshTabModified(tab);
@@ -1820,11 +1806,11 @@ let renameTarget = null;
 function showRenameDialog(tab) {
   const target = tab ? { kind: 'tab', tab } : (rightPaneTarget() === 'file' ? { kind: 'split' } : { kind: 'tab', tab: getActiveTab() });
   if (target.kind === 'tab' && !target.tab) return;
-  if (target.kind === 'tab' && rightPaneTarget() === 'tab' && !tab) target.tab = tabs.find(t => t.id === splitTabId) || target.tab;
+  if (target.kind === 'tab' && rightPaneTarget() === 'tab' && !tab) target.tab = tabs.find(t => t.id === sp.tabId) || target.tab;
   renameTarget = target;
   const dialog = document.getElementById('rename-dialog');
   const input = document.getElementById('rename-input');
-  const current = target.kind === 'split' ? getFileName(splitFilePath) : tabDisplayName(target.tab);
+  const current = target.kind === 'split' ? getFileName(sp.filePath) : tabDisplayName(target.tab);
   input.value = current;
   dialog.classList.remove('hidden');
   input.focus();
@@ -1854,7 +1840,7 @@ async function executeRename() {
     return;
   }
 
-  const oldPath = target.kind === 'split' ? splitFilePath : target.tab.filePath;
+  const oldPath = target.kind === 'split' ? sp.filePath : target.tab.filePath;
   const sep = oldPath.includes('\\') ? '\\' : '/';
   const dir = oldPath.slice(0, oldPath.lastIndexOf(sep));
   const newPath = dir + sep + newName;
@@ -1868,9 +1854,9 @@ async function executeRename() {
   }
 
   if (target.kind === 'split') {
-    splitFilePath = newPath;
-    splitLanguage = detectLanguageKey(newPath, splitEditorView.state.doc.toString());
-    splitEditorView.dispatch({ effects: splitLanguageCompartment.reconfigure(languageExtensionFor(splitLanguage)) });
+    sp.filePath = newPath;
+    sp.language = detectLanguageKey(newPath, sp.view.state.doc.toString());
+    sp.view.dispatch({ effects: splitLanguageCompartment.reconfigure(languageExtensionFor(sp.language)) });
   } else {
     target.tab.filePath = newPath;
     target.tab.language = detectLanguageKey(newPath, tabContent(target.tab));
@@ -1908,7 +1894,7 @@ function printTab(tab) {
 
 function printCurrent() {
   const target = rightPaneTarget();
-  if (target === 'tab') return printTab(tabs.find(t => t.id === splitTabId));
+  if (target === 'tab') return printTab(tabs.find(t => t.id === sp.tabId));
   if (target === 'file') return printTab(null);
   return printTab(getActiveTab());
 }
@@ -2067,29 +2053,35 @@ function refreshFunctionList() {
     });
     container.appendChild(item);
   }
+  listRendered('function-list-content');
 }
 
+// F8: main editor, then each open pane in order, then back.
 function focusOtherView() {
-  if (!splitEditorView) return;
+  const open = openPanes();
+  if (!open.length) return;
   if (focusedPane === 'right') {
-    if (proseMode) document.getElementById('prose-editor').focus();
+    const idx = open.findIndex(p => p.slot === focusedExtra);
+    const next = open[idx + 1];
+    if (next) next.view.focus();
+    else if (proseMode) document.getElementById('prose-editor').focus();
     else editorView.focus();
   } else {
-    splitEditorView.focus();
+    open[0].view.focus();
   }
 }
 
 function setEol(eol) {
   const target = rightPaneTarget();
   if (target === 'file') {
-    splitEol = eol;
-    splitModified = computeSplitModified();
-    if (splitModified) scheduleSplitAutoSave();
+    sp.eol = eol;
+    sp.modified = computeSplitModified();
+    if (sp.modified) scheduleSplitAutoSave();
     updateStatusBar();
     refreshEolMarkers();
     return;
   }
-  const tab = target === 'tab' ? tabs.find(t => t.id === splitTabId) : getActiveTab();
+  const tab = target === 'tab' ? tabs.find(t => t.id === sp.tabId) : getActiveTab();
   if (!tab) return;
   tab.eol = eol;
   refreshTabModified(tab);
@@ -2106,16 +2098,16 @@ function updateWindowTitle() {
 
 function statusTarget() {
   const tab = getActiveTab();
-  const rightFocused = focusedPane === 'right' && splitEditorView;
-  if (rightFocused && splitMode === 'file') {
-    return { filePath: splitFilePath, modified: splitModified, eol: splitEol, encoding: splitEncoding, language: splitLanguage, view: splitEditorView };
+  const rightFocused = focusedPane === 'right' && sp.view;
+  if (rightFocused && sp.mode === 'file') {
+    return { filePath: sp.filePath, modified: sp.modified, eol: sp.eol, encoding: sp.encoding, language: sp.language, view: sp.view };
   }
-  if (rightFocused && splitMode === 'tab') {
-    const st = tabs.find(t => t.id === splitTabId) || tab;
-    return { filePath: st.filePath, modified: st.modified, eol: st.eol, encoding: st.encoding, language: st.language, view: splitEditorView };
+  if (rightFocused && sp.mode === 'tab') {
+    const st = tabs.find(t => t.id === sp.tabId) || tab;
+    return { filePath: st.filePath, modified: st.modified, eol: st.eol, encoding: st.encoding, language: st.language, view: sp.view };
   }
-  if (rightFocused && splitMode === 'compare') {
-    return { filePath: compareRightPath, modified: false, eol: tab.eol, encoding: 'utf8', language: detectLanguageKey(compareRightPath), view: splitEditorView };
+  if (rightFocused && sp.mode === 'compare') {
+    return { filePath: compareRightPath, modified: false, eol: tab.eol, encoding: 'utf8', language: detectLanguageKey(compareRightPath), view: sp.view };
   }
   return { filePath: tab.filePath, modified: tab.modified, eol: tab.eol, encoding: tab.encoding, language: tab.language, view: editorView };
 }
@@ -2204,10 +2196,8 @@ function applyTabLanguage(tab) {
   } else {
     tab.state = tab.state.update({ effects: effect }).state;
   }
-  if (splitMode === 'tab' && splitTabId === tab.id && splitEditorView) {
-    splitEditorView.dispatch({
-      effects: splitLanguageCompartment.reconfigure(languageExtensionFor(tab.language)),
-    });
+  for (const p of panesShowingTab(tab.id)) {
+    p.view.dispatch({ effects: splitLanguageCompartment.reconfigure(languageExtensionFor(tab.language)) });
   }
   updateStatusBar();
   if (functionListVisible()) refreshFunctionList();
@@ -2217,13 +2207,13 @@ function setLanguage(key) {
   if (!LANG_BY_KEY[key]) return;
   const target = rightPaneTarget();
   if (target === 'file') {
-    splitLanguage = key;
-    splitEditorView.dispatch({ effects: splitLanguageCompartment.reconfigure(languageExtensionFor(key)) });
+    sp.language = key;
+    sp.view.dispatch({ effects: splitLanguageCompartment.reconfigure(languageExtensionFor(key)) });
     updateStatusBar();
     if (functionListVisible()) refreshFunctionList();
     return;
   }
-  const tab = target === 'tab' ? tabs.find(t => t.id === splitTabId) : getActiveTab();
+  const tab = target === 'tab' ? tabs.find(t => t.id === sp.tabId) : getActiveTab();
   if (!tab) return;
   tab.language = key;
   applyTabLanguage(tab);
@@ -2274,21 +2264,21 @@ async function saveTabAs(tab) {
 }
 
 function rightPaneTarget() {
-  if (focusedPane !== 'right' || !splitEditorView) return null;
-  return splitMode === 'file' || splitMode === 'tab' ? splitMode : null;
+  if (focusedPane !== 'right' || !sp.view) return null;
+  return sp.mode === 'file' || sp.mode === 'tab' ? sp.mode : null;
 }
 
 async function saveCurrentFile() {
   const target = rightPaneTarget();
   if (target === 'file') return saveSplitFile();
-  if (target === 'tab') return saveTab(tabs.find(t => t.id === splitTabId));
+  if (target === 'tab') return saveTab(tabs.find(t => t.id === sp.tabId));
   return saveTab(getActiveTab());
 }
 
 async function saveCurrentFileAs() {
   const target = rightPaneTarget();
   if (target === 'file') return saveSplitFileAs();
-  if (target === 'tab') return saveTabAs(tabs.find(t => t.id === splitTabId));
+  if (target === 'tab') return saveTabAs(tabs.find(t => t.id === sp.tabId));
   return saveTabAs(getActiveTab());
 }
 
@@ -2297,7 +2287,7 @@ function applyFontSize() {
   document.querySelectorAll('.cm-editor').forEach(el => { el.style.fontSize = px; });
   document.getElementById('prose-editor').style.fontSize = px;
   if (editorView) editorView.requestMeasure();
-  if (splitEditorView) splitEditorView.requestMeasure();
+  for (const p of openPanes()) p.view.requestMeasure();
 }
 
 function setFontSize(size) {
@@ -2363,7 +2353,7 @@ function mainExtensions() {
     EditorView.updateListener.of((update) => {
       if (update.docChanged) {
         markModified();
-        mirrorChanges(splitEditorView, update);
+        mirrorFromMain(update);
         if (minimapVisible) requestAnimationFrame(renderMinimap);
         scheduleFunctionListRefresh();
       }
@@ -2677,6 +2667,7 @@ function showGrammarResults(matches) {
 
     container.appendChild(item);
   });
+  listRendered('grammar-results');
 }
 
 function escapeHtml(str) {
@@ -2866,10 +2857,8 @@ function toggleWordWrap() {
   editorView.dispatch({
     effects: wrapCompartment.reconfigure(wrapExt),
   });
-  if (splitEditorView) {
-    splitEditorView.dispatch({
-      effects: splitWrapCompartment.reconfigure(wrapExt),
-    });
+  for (const p of openPanes()) {
+    p.view.dispatch({ effects: splitWrapCompartment.reconfigure(wrapExt) });
   }
   const proseEl = document.getElementById('prose-editor');
   if (wordWrap) {
@@ -2912,7 +2901,7 @@ function applySettings(s) {
     setEditorFont(s.fontFamily);
   }
   if (typeof s.wordWrap === 'boolean' && s.wordWrap !== wordWrap) toggleWordWrap();
-  if (s.isDarkTheme === false && isDarkTheme) toggleTheme();
+  if (typeof s.isDarkTheme === 'boolean' && s.isDarkTheme !== isDarkTheme) toggleTheme();
   if (s.leftBgColor || s.rightBgColor || s.proseBgColor) {
     leftBgColor = s.leftBgColor || null;
     rightBgColor = s.rightBgColor || null;
@@ -2937,10 +2926,8 @@ function applyPaneThemes() {
   editorView.dispatch({
     effects: fontCompartment.reconfigure(paneTheme(currentFontFamily, leftBgColor)),
   });
-  if (splitEditorView) {
-    splitEditorView.dispatch({
-      effects: splitFontCompartment.reconfigure(paneTheme(currentFontFamily, rightBgColor)),
-    });
+  for (const p of openPanes()) {
+    p.view.dispatch({ effects: splitFontCompartment.reconfigure(paneTheme(currentFontFamily, rightBgColor)) });
   }
 }
 
@@ -2951,7 +2938,7 @@ function setEditorFont(fontFamily) {
 }
 
 function setEditorBackground(color) {
-  if (focusedPane === 'right' && splitEditorView) {
+  if (focusedPane === 'right' && sp.view) {
     rightBgColor = color;
   } else if (focusedPane === 'prose') {
     proseBgColor = color;
@@ -2970,14 +2957,14 @@ async function openFileInRightPane(filePath) {
 }
 
 function adoptSplitFileAsTab() {
-  const content = splitEditorView.state.doc.toString();
-  const eol = splitEol;
-  const savedContent = splitSavedContent;
-  const modified = splitModified;
-  const filePath = splitFilePath;
-  const savedEol = splitSavedEol;
-  const encoding = splitEncoding;
-  const savedEncoding = splitSavedEncoding;
+  const content = sp.view.state.doc.toString();
+  const eol = sp.eol;
+  const savedContent = sp.savedContent;
+  const modified = sp.modified;
+  const filePath = sp.filePath;
+  const savedEol = sp.savedEol;
+  const encoding = sp.encoding;
+  const savedEncoding = sp.savedEncoding;
   const tab = createTab(filePath, content, { encoding });
   tab.eol = eol;
   tab.savedEol = savedEol;
@@ -2992,11 +2979,11 @@ function adoptSplitFileAsTab() {
 }
 
 async function openFileFromPath(filePath) {
-  if (focusedPane === 'right' && splitView && splitMode !== 'compare') {
+  if (focusedPane === 'right' && splitView && sp.mode !== 'compare') {
     return openFileInRightPane(filePath);
   }
 
-  if (splitMode === 'file' && splitFilePath === filePath) {
+  if (sp.mode === 'file' && sp.filePath === filePath) {
     adoptSplitFileAsTab();
     return;
   }
@@ -3036,6 +3023,7 @@ async function loadFolderTree(folderPath) {
   container.appendChild(childrenDiv);
 
   await populateTreeLevel(childrenDiv, folderPath, 1);
+  listRendered('file-tree-content');
 
   rootDiv.addEventListener('click', () => {
     const isExpanded = childrenDiv.classList.contains('expanded');
@@ -3105,6 +3093,7 @@ async function loadRecentFiles() {
     item.addEventListener('click', () => openFileFromPath(filePath));
     container.appendChild(item);
   }
+  listRendered('recent-files-content');
 }
 
 function initSidebarTabs() {
@@ -3124,6 +3113,16 @@ function initSidebarTabs() {
       }
     });
   });
+}
+
+// Alt+1/2/3: show a sidebar panel and put keyboard focus in its list.
+function showSidebarPanel(panelId) {
+  const btn = document.querySelector(`.sidebar-tab[data-panel="${panelId}"]`);
+  if (!btn) return;
+  if (!sidebarVisible) toggleSidebar();
+  btn.click();
+  const content = document.getElementById(panelId + '-content');
+  if (content) focusKeyboardList(content);
 }
 
 function initSidebarResize() {
@@ -3308,7 +3307,9 @@ function initMinimap() {
 // Text transformations
 function editableView() {
   const view = activeView();
-  if (!view || (view === splitEditorView && splitMode === 'compare')) return null;
+  if (!view) return null;
+  const pane = paneOf(view);
+  if (pane && pane.mode === 'compare') return null;
   return view;
 }
 
@@ -3473,36 +3474,92 @@ function lineOperation(type) {
 }
 
 // Split view
+// Extra panes. Pane 0 is the classic right-hand split; panes 1 and 2
+// are the bottom row of the four-pane grid. The main tabbed editor is
+// always the top-left cell. Every extra pane carries the same state the
+// old single split did; `sp` forwards to whichever extra pane has focus
+// (or pane 0 when the main editor has focus) so the two-pane code paths
+// keep working unchanged.
+const PANE_SLOTS = ['editor-split', 'editor-pane-3', 'editor-pane-4'];
 let splitView = false;
-let splitEditorView = null;
-let splitFilePath = null;
-let splitEol = DEFAULT_EOL;
-let splitSavedEol = DEFAULT_EOL;
-let splitEncoding = 'utf8';
-let splitSavedEncoding = 'utf8';
-let splitLanguage = 'plain';
-let splitSavedContent = '';
+let gridView = false;
+let panes = [];
+let focusedExtra = 0;
 
-function computeSplitModified() {
-  if (!splitEditorView) return false;
-  return splitEditorView.state.doc.toString() !== splitSavedContent
-    || splitEol !== splitSavedEol
-    || splitEncoding !== splitSavedEncoding;
+function newPane(slot) {
+  return {
+    slot,
+    el: null,
+    view: null,
+    filePath: null,
+    eol: DEFAULT_EOL,
+    savedEol: DEFAULT_EOL,
+    encoding: 'utf8',
+    savedEncoding: 'utf8',
+    language: 'plain',
+    savedContent: '',
+    modified: false,
+    autoSaveTimer: null,
+    mode: null,
+    tabId: null,
+  };
 }
-let splitModified = false;
-let splitAutoSaveTimer = null;
+
+const DUMMY_PANE = newPane(-1);
+
+function initPanes() {
+  panes = PANE_SLOTS.map((id, i) => {
+    const p = newPane(i);
+    p.el = document.getElementById(id);
+    return p;
+  });
+}
+
+function currentPane() {
+  if (!panes.length) return DUMMY_PANE;
+  return panes[focusedPane === 'right' ? focusedExtra : 0] || panes[0];
+}
+
+const sp = new Proxy({}, {
+  get: (_, k) => currentPane()[k],
+  set: (_, k, v) => { currentPane()[k] = v; return true; },
+});
+
+function openPanes() {
+  return panes.filter(p => p.view);
+}
+
+function paneOf(view) {
+  return panes.find(p => p.view === view) || null;
+}
+
+function computeSplitModified(pane = currentPane()) {
+  if (!pane.view) return false;
+  return pane.view.state.doc.toString() !== pane.savedContent
+    || pane.eol !== pane.savedEol
+    || pane.encoding !== pane.savedEncoding;
+}
 let syncingSplit = false;
-let splitMode = null;
-let splitTabId = null;
 let compareMode = false;
 let compareRightPath = null;
 
-function splitMirrorsActiveTab() {
-  return splitMode === 'clone' || (splitMode === 'tab' && splitTabId === activeTabId);
+function paneMirrorsActiveTab(p) {
+  return p.mode === 'clone' || (p.mode === 'tab' && p.tabId === activeTabId);
 }
 
+function paneEolLabel(pane) {
+  if (pane.mode === 'file') return eolLabel(pane.eol);
+  if (pane.mode === 'tab') {
+    const tab = tabs.find(t => t.id === pane.tabId);
+    if (tab) return eolLabel(tab.eol);
+  }
+  return mainEolLabel();
+}
+
+// Push one editor's change set into another view without echoing back.
 function mirrorChanges(target, update) {
-  if (syncingSplit || !target || !splitMirrorsActiveTab()) return;
+  if (!target) return;
+  const wasSyncing = syncingSplit;
   syncingSplit = true;
   try {
     target.dispatch({ changes: update.changes });
@@ -3511,11 +3568,35 @@ function mirrorChanges(target, update) {
       changes: { from: 0, to: target.state.doc.length, insert: update.state.doc.toString() },
     });
   } finally {
-    syncingSplit = false;
+    syncingSplit = wasSyncing;
+  }
+}
+
+// Main editor edited: every pane cloning or showing the active tab follows.
+function mirrorFromMain(update) {
+  if (syncingSplit) return;
+  for (const p of openPanes()) {
+    if (paneMirrorsActiveTab(p)) mirrorChanges(p.view, update);
+  }
+}
+
+// A pane edited a tab's document: the main editor (if it shows that tab),
+// the tab's stored state (if it does not), and every other pane on the
+// same tab follow.
+function mirrorFromPane(pane, tab, update) {
+  if (syncingSplit) return;
+  if (tab.id === activeTabId) mirrorChanges(editorView, update);
+  else applyChangesToTab(tab, update);
+  for (const q of openPanes()) {
+    if (q === pane) continue;
+    if ((q.mode === 'tab' && q.tabId === tab.id) || (q.mode === 'clone' && tab.id === activeTabId)) {
+      mirrorChanges(q.view, update);
+    }
   }
 }
 
 function applyChangesToTab(tab, update) {
+  const wasSyncing = syncingSplit;
   syncingSplit = true;
   try {
     tab.state = tab.state.update({ changes: update.changes }).state;
@@ -3524,7 +3605,7 @@ function applyChangesToTab(tab, update) {
       changes: { from: 0, to: tab.state.doc.length, insert: update.state.doc.toString() },
     }).state;
   } finally {
-    syncingSplit = false;
+    syncingSplit = wasSyncing;
   }
   tab.content = tab.state.doc.toString();
   tab.modified = tab.content !== tab.savedContent;
@@ -3532,26 +3613,45 @@ function applyChangesToTab(tab, update) {
   if (tab.modified && tab.filePath) scheduleAutoSave(tab);
 }
 
+// Re-seed every clone pane from the main editor (after a tab switch).
 function refreshSplitClone() {
-  if (!splitEditorView || splitMode !== 'clone') return;
   const tab = getActiveTab();
   if (!tab) return;
+  for (const p of openPanes()) {
+    if (p.mode !== 'clone') continue;
+    syncingSplit = true;
+    try {
+      p.view.dispatch({
+        changes: { from: 0, to: p.view.state.doc.length, insert: editorView.state.doc.toString() },
+        effects: splitLanguageCompartment.reconfigure(languageExtensionFor(tab.language)),
+      });
+    } finally {
+      syncingSplit = false;
+    }
+  }
+}
+
+// Panes in tab mode showing this tab receive a whole-document replacement
+// (reload from disk) or a language change.
+function panesShowingTab(tabId) {
+  return openPanes().filter(p => p.mode === 'tab' && p.tabId === tabId);
+}
+
+function replacePaneDoc(pane, content) {
   syncingSplit = true;
   try {
-    splitEditorView.dispatch({
-      changes: { from: 0, to: splitEditorView.state.doc.length, insert: editorView.state.doc.toString() },
-      effects: splitLanguageCompartment.reconfigure(languageExtensionFor(tab.language)),
-    });
+    pane.view.dispatch({ changes: { from: 0, to: pane.view.state.doc.length, insert: content } });
   } finally {
     syncingSplit = false;
   }
 }
 
-function scheduleSplitAutoSave() {
-  if (splitAutoSaveTimer) clearTimeout(splitAutoSaveTimer);
-  splitAutoSaveTimer = setTimeout(async () => {
-    if (!splitEditorView || !splitFilePath || !splitModified) return;
-    if (await saveSplitFile({ silent: true })) {
+function scheduleSplitAutoSave(pane = currentPane()) {
+  if (pane.autoSaveTimer) clearTimeout(pane.autoSaveTimer);
+  pane.autoSaveTimer = setTimeout(async () => {
+    pane.autoSaveTimer = null;
+    if (!pane.view || !pane.filePath || !pane.modified) return;
+    if (await saveSplitFile({ silent: true }, pane)) {
       flashAutoSaveIndicator();
     } else {
       flashAutoSaveIndicator('Auto-save failed', '#e05a5a');
@@ -3559,79 +3659,85 @@ function scheduleSplitAutoSave() {
   }, AUTO_SAVE_DELAY);
 }
 
-async function saveSplitFile(opts = {}) {
-  if (!splitEditorView || !splitFilePath || !window.electronAPI) return false;
-  const content = splitEditorView.state.doc.toString();
+async function saveSplitFile(opts = {}, pane = currentPane()) {
+  if (!pane.view || !pane.filePath || !window.electronAPI) return false;
+  const content = pane.view.state.doc.toString();
   const result = await window.electronAPI.saveFile({
-    filePath: splitFilePath,
-    content: content.replace(/\n/g, splitEol),
-    encoding: splitEncoding,
+    filePath: pane.filePath,
+    content: content.replace(/\n/g, pane.eol),
+    encoding: pane.encoding,
   });
   if (!result.success) {
-    if (!opts.silent) reportSaveError(splitFilePath, result.error);
+    if (!opts.silent) reportSaveError(pane.filePath, result.error);
     return false;
   }
-  splitSavedContent = content;
-  splitSavedEol = splitEol;
-  splitSavedEncoding = splitEncoding;
-  splitModified = false;
-  splitEditorView.dispatch({ effects: markSavedEffect.of(null) });
+  pane.savedContent = content;
+  pane.savedEol = pane.eol;
+  pane.savedEncoding = pane.encoding;
+  pane.modified = false;
+  pane.view.dispatch({ effects: markSavedEffect.of(null) });
   updateStatusBar();
   return true;
 }
 
-async function saveSplitFileAs() {
-  if (!splitEditorView || !window.electronAPI) return false;
-  const content = splitEditorView.state.doc.toString();
+async function saveSplitFileAs(pane = currentPane()) {
+  if (!pane.view || !window.electronAPI) return false;
+  const content = pane.view.state.doc.toString();
   const result = await window.electronAPI.saveAs({
-    content: content.replace(/\n/g, splitEol),
-    defaultPath: splitFilePath || 'untitled.txt',
-    encoding: splitEncoding,
+    content: content.replace(/\n/g, pane.eol),
+    defaultPath: pane.filePath || 'untitled.txt',
+    encoding: pane.encoding,
   });
   if (!result.success) {
     if (!result.canceled) reportSaveError(result.filePath || 'file', result.error);
     return false;
   }
-  splitFilePath = result.filePath;
-  splitSavedContent = content;
-  splitSavedEol = splitEol;
-  splitSavedEncoding = splitEncoding;
-  splitModified = false;
-  splitLanguage = detectLanguageKey(splitFilePath, content);
-  splitEditorView.dispatch({
-    effects: [splitLanguageCompartment.reconfigure(languageExtensionFor(splitLanguage)), markSavedEffect.of(null)],
+  pane.filePath = result.filePath;
+  pane.savedContent = content;
+  pane.savedEol = pane.eol;
+  pane.savedEncoding = pane.encoding;
+  pane.modified = false;
+  pane.language = detectLanguageKey(pane.filePath, content);
+  pane.view.dispatch({
+    effects: [splitLanguageCompartment.reconfigure(languageExtensionFor(pane.language)), markSavedEffect.of(null)],
   });
   updateStatusBar();
   return true;
 }
 
-async function confirmDiscardSplit() {
-  if (!splitModified || !splitFilePath) return true;
-  const choice = await confirmDiscard(`Save changes to ${getFileName(splitFilePath)}?`);
+async function confirmDiscardSplit(pane = currentPane()) {
+  if (!pane.modified || !pane.filePath) return true;
+  const choice = await confirmDiscard(`Save changes to ${getFileName(pane.filePath)}?`);
   if (choice === 2) return false;
-  if (choice === 0) return saveSplitFile();
+  if (choice === 0) return saveSplitFile({}, pane);
   return true;
 }
 
-function destroySplitEditor() {
-  if (splitAutoSaveTimer) clearTimeout(splitAutoSaveTimer);
-  splitAutoSaveTimer = null;
-  if (splitEditorView) {
-    splitEditorView.destroy();
-    splitEditorView = null;
+async function confirmDiscardAllPanes() {
+  for (const p of openPanes()) {
+    if (!(await confirmDiscardSplit(p))) return false;
   }
-  splitFilePath = null;
-  splitModified = false;
-  splitSavedContent = '';
-  splitMode = null;
-  splitTabId = null;
+  return true;
 }
 
-function createSplitEditor(content, langExt, mode) {
-  const splitEl = document.getElementById('editor-split');
-  destroySplitEditor();
-  splitEl.innerHTML = '';
-  splitMode = mode;
+function destroySplitEditor(pane = currentPane()) {
+  if (pane.autoSaveTimer) clearTimeout(pane.autoSaveTimer);
+  pane.autoSaveTimer = null;
+  if (pane.view) {
+    pane.view.destroy();
+    pane.view = null;
+  }
+  if (pane.el) pane.el.innerHTML = '';
+  pane.filePath = null;
+  pane.modified = false;
+  pane.savedContent = '';
+  pane.mode = null;
+  pane.tabId = null;
+}
+
+function createSplitEditor(content, langExt, mode, pane = currentPane()) {
+  destroySplitEditor(pane);
+  pane.mode = mode;
 
   const extensions = [
     ...bookmarkExtensions(),
@@ -3658,15 +3764,15 @@ function createSplitEditor(content, langExt, mode) {
     splitWrapCompartment.of(wordWrap ? EditorView.lineWrapping : []),
     splitFontCompartment.of(paneTheme(currentFontFamily, rightBgColor)),
     splitWhitespaceCompartment.of(whitespaceExt()),
-    splitEolCompartment.of(showEol ? eolMarkerPlugin(splitEolLabel) : []),
+    splitEolCompartment.of(showEol ? eolMarkerPlugin(() => paneEolLabel(pane)) : []),
     wikiLinkPlugin,
     ViewPlugin.fromClass(class {
       constructor(view) {
-        this.decorations = buildCompareDecorations(view, rightCompareRanges);
+        this.decorations = buildCompareDecorations(view, mode === 'compare' ? rightCompareRanges : []);
       }
       update(update) {
         if (update.docChanged || update.viewportChanged) {
-          this.decorations = buildCompareDecorations(update.view, rightCompareRanges);
+          this.decorations = buildCompareDecorations(update.view, mode === 'compare' ? rightCompareRanges : []);
         }
       }
     }, { decorations: v => v.decorations }),
@@ -3704,58 +3810,64 @@ function createSplitEditor(content, langExt, mode) {
     extensions.push(
       EditorView.updateListener.of((update) => {
         if (!update.docChanged) return;
-        splitModified = computeSplitModified();
-        if (splitModified) scheduleSplitAutoSave();
+        pane.modified = computeSplitModified(pane);
+        if (pane.modified) scheduleSplitAutoSave(pane);
       })
     );
   } else if (mode === 'tab') {
     extensions.push(
       EditorView.updateListener.of((update) => {
         if (!update.docChanged || syncingSplit) return;
-        const tab = tabs.find(t => t.id === splitTabId);
+        const tab = tabs.find(t => t.id === pane.tabId);
         if (!tab) return;
-        if (tab.id === activeTabId) {
-          mirrorChanges(editorView, update);
-        } else {
-          applyChangesToTab(tab, update);
-        }
+        mirrorFromPane(pane, tab, update);
       })
     );
   } else {
     extensions.push(
       EditorView.updateListener.of((update) => {
-        if (update.docChanged) mirrorChanges(editorView, update);
+        if (!update.docChanged || syncingSplit) return;
+        const tab = getActiveTab();
+        if (tab) mirrorFromPane(pane, tab, update);
       })
     );
   }
 
   const splitState = EditorState.create({ doc: content, extensions });
 
-  splitEditorView = new EditorView({
+  pane.view = new EditorView({
     state: splitState,
-    parent: splitEl,
+    parent: pane.el,
   });
 
   applyFontSize();
-  return splitEditorView;
+  return pane.view;
 }
 
-async function loadTabIntoSplitPane(tab) {
-  if (splitMode === 'tab' && splitTabId === tab.id && splitEditorView) {
-    splitEditorView.focus();
+function createClonePane(pane) {
+  const tab = getActiveTab();
+  const content = editorView.state.doc.toString();
+  const langExt = tab ? languageExtensionFor(tab.language) : [];
+  createSplitEditor(content, langExt, 'clone', pane);
+}
+
+async function loadTabIntoSplitPane(tab, pane = currentPane()) {
+  if (pane.mode === 'tab' && pane.tabId === tab.id && pane.view) {
+    pane.view.focus();
     return;
   }
   if (compareMode) closeCompare();
-  if (!(await confirmDiscardSplit())) return;
+  if (!(await confirmDiscardSplit(pane))) return;
   if (tab.id === activeTabId && proseMode) syncProseToEditor();
 
   if (!splitView) showSplitLayout();
-  createSplitEditor(tabContent(tab), languageExtensionFor(tab.language), 'tab');
-  splitTabId = tab.id;
-  splitEditorView.focus();
+  createSplitEditor(tabContent(tab), languageExtensionFor(tab.language), 'tab', pane);
+  pane.tabId = tab.id;
+  pane.view.focus();
   updateStatusBar();
 }
 
+// Two-pane layout: main editor left, pane 0 right.
 function showSplitLayout() {
   splitView = true;
   document.getElementById('editor-area').classList.add('split-view');
@@ -3766,13 +3878,70 @@ function showSplitLayout() {
   }
 }
 
+// Closes every extra pane and returns to a single editor.
 function hideSplitLayout() {
   splitView = false;
-  document.getElementById('editor-area').classList.remove('split-view');
+  gridView = false;
+  const area = document.getElementById('editor-area');
+  area.classList.remove('split-view', 'grid-view');
+  area.style.removeProperty('--grid-col');
+  area.style.removeProperty('--grid-row');
   document.getElementById('editor').style.width = '';
   document.getElementById('prose-editor').style.width = '';
-  destroySplitEditor();
+  for (const p of panes) destroySplitEditor(p);
+  document.getElementById('btn-split-grid') && document.getElementById('btn-split-grid').classList.remove('active');
   if (focusedPane === 'right') focusedPane = proseMode ? 'prose' : 'left';
+  focusedExtra = 0;
+}
+
+// Four-pane grid: main editor top-left, pane 0 top-right, panes 1 and 2
+// on the bottom row. Empty cells start as clones of the active tab.
+function showGridLayout() {
+  splitView = true;
+  gridView = true;
+  const area = document.getElementById('editor-area');
+  area.classList.remove('split-view');
+  area.classList.add('grid-view');
+  document.getElementById('editor').style.width = '';
+  document.getElementById('prose-editor').style.width = '';
+  for (const p of panes) {
+    if (!p.view) createClonePane(p);
+  }
+}
+
+// Leaves the grid for the two-pane layout, keeping pane 0.
+async function leaveGridLayout() {
+  for (const p of panes.slice(1)) {
+    if (!(await confirmDiscardSplit(p))) return false;
+  }
+  for (const p of panes.slice(1)) destroySplitEditor(p);
+  gridView = false;
+  const area = document.getElementById('editor-area');
+  area.classList.remove('grid-view');
+  area.style.removeProperty('--grid-col');
+  area.style.removeProperty('--grid-row');
+  if (focusedPane === 'right' && focusedExtra > 0) {
+    focusedExtra = 0;
+    if (panes[0].view) panes[0].view.focus();
+  }
+  showSplitLayout();
+  return true;
+}
+
+async function toggleGridView() {
+  if (compareMode) return;
+  if (gridView) {
+    await leaveGridLayout();
+    return;
+  }
+  showGridLayout();
+}
+
+// A pane whose tab was closed: in the grid it becomes a clone so the
+// grid keeps its shape; in the two-pane layout the split closes.
+function vacatePane(pane) {
+  if (gridView) createClonePane(pane);
+  else hideSplitLayout();
 }
 
 async function toggleSplitView() {
@@ -3782,18 +3951,13 @@ async function toggleSplitView() {
   }
 
   if (splitView) {
-    if (!(await confirmDiscardSplit())) return;
+    if (!(await confirmDiscardAllPanes())) return;
     hideSplitLayout();
     return;
   }
 
   showSplitLayout();
-  if (!splitEditorView) {
-    const tab = getActiveTab();
-    const content = editorView.state.doc.toString();
-    const langExt = tab ? languageExtensionFor(tab.language) : [];
-    createSplitEditor(content, langExt, 'clone');
-  }
+  if (!panes[0].view) createClonePane(panes[0]);
 }
 
 async function loadFileIntoSplitPane(filePath) {
@@ -3808,16 +3972,16 @@ async function loadFileIntoSplitPane(filePath) {
   if (!splitView) showSplitLayout();
 
   const content = normalizeNewlines(result.content);
-  splitLanguage = detectLanguageKey(filePath, content);
-  createSplitEditor(content, languageExtensionFor(splitLanguage), 'file');
-  splitFilePath = filePath;
-  splitEol = detectEol(result.content);
-  splitSavedEol = splitEol;
-  splitEncoding = result.encoding || 'utf8';
-  splitSavedEncoding = splitEncoding;
-  splitSavedContent = content;
-  splitModified = false;
-  splitEditorView.focus();
+  sp.language = detectLanguageKey(filePath, content);
+  createSplitEditor(content, languageExtensionFor(sp.language), 'file');
+  sp.filePath = filePath;
+  sp.eol = detectEol(result.content);
+  sp.savedEol = sp.eol;
+  sp.encoding = result.encoding || 'utf8';
+  sp.savedEncoding = sp.encoding;
+  sp.savedContent = content;
+  sp.modified = false;
+  sp.view.focus();
   refreshEolMarkers();
 }
 
@@ -3849,6 +4013,30 @@ function initSplitGutter() {
     if (!dragging) return;
     dragging = false;
     document.body.classList.remove('dragging-split');
+  });
+
+  // Grid dividers: vertical sets --grid-col, horizontal sets --grid-row.
+  const area = document.getElementById('editor-area');
+  let gridDrag = null;
+  const gv = document.getElementById('grid-gutter-v');
+  const gh = document.getElementById('grid-gutter-h');
+  gv.addEventListener('mousedown', (e) => { e.preventDefault(); gridDrag = 'col'; document.body.classList.add('dragging-split'); });
+  gh.addEventListener('mousedown', (e) => { e.preventDefault(); gridDrag = 'row'; document.body.classList.add('dragging-grid-row'); });
+  document.addEventListener('mousemove', (e) => {
+    if (!gridDrag) return;
+    const rect = area.getBoundingClientRect();
+    if (gridDrag === 'col') {
+      const pct = Math.max(15, Math.min(85, ((e.clientX - rect.left) / rect.width) * 100));
+      area.style.setProperty('--grid-col', pct + '%');
+    } else {
+      const pct = Math.max(15, Math.min(85, ((e.clientY - rect.top) / rect.height) * 100));
+      area.style.setProperty('--grid-row', pct + '%');
+    }
+  });
+  document.addEventListener('mouseup', () => {
+    if (!gridDrag) return;
+    gridDrag = null;
+    document.body.classList.remove('dragging-split', 'dragging-grid-row');
   });
 }
 
@@ -3882,6 +4070,9 @@ function resetSplitDivider() {
   if (!splitView && !compareMode) return;
   document.getElementById('editor').style.width = '';
   document.getElementById('prose-editor').style.width = '';
+  const area = document.getElementById('editor-area');
+  area.style.removeProperty('--grid-col');
+  area.style.removeProperty('--grid-row');
 }
 
 let pendingCompare = false;
@@ -3893,7 +4084,8 @@ function openCompare() {
 }
 
 async function startCompare(rightPath, rightContent) {
-  if (!(await confirmDiscardSplit())) return;
+  if (gridView && !(await leaveGridLayout())) return;
+  if (!(await confirmDiscardSplit(panes[0]))) return;
 
   const tab = getActiveTab();
   const leftContent = editorView.state.doc.toString();
@@ -3909,7 +4101,7 @@ async function startCompare(rightPath, rightContent) {
   editorView.dispatch({ effects: refreshDecorations.of(null) });
 
   const langExt = getLanguageExtension(rightPath, rightContent);
-  createSplitEditor(rightContent, langExt, 'compare');
+  createSplitEditor(rightContent, langExt, 'compare', panes[0]);
 
   document.getElementById('compare-left-name').textContent = leftName;
   document.getElementById('compare-right-name').textContent = rightName;
@@ -3961,13 +4153,13 @@ function computeCompareRanges(leftContent, rightContent) {
 let compareScrollCleanup = null;
 
 function syncCompareScroll() {
-  if (!editorView || !splitEditorView) return;
+  if (!editorView || !panes[0].view) return;
   if (compareScrollCleanup) compareScrollCleanup();
 
   let syncing = false;
 
   const leftScroller = editorView.scrollDOM;
-  const rightScroller = splitEditorView.scrollDOM;
+  const rightScroller = panes[0].view.scrollDOM;
 
   const onLeft = () => {
     if (syncing) return;
@@ -4008,22 +4200,20 @@ function closeCompare() {
 }
 
 // Theme toggle
-let isDarkTheme = true;
+let isDarkTheme = false;
 const themeCompartment = new Compartment();
 const splitThemeCompartment = new Compartment();
 
 function toggleTheme() {
   isDarkTheme = !isDarkTheme;
-  document.body.classList.toggle('light-theme', !isDarkTheme);
+  document.body.classList.toggle('dark-theme', isDarkTheme);
 
   editorView.dispatch({
     effects: themeCompartment.reconfigure(isDarkTheme ? oneDark : []),
   });
 
-  if (splitEditorView) {
-    splitEditorView.dispatch({
-      effects: splitThemeCompartment.reconfigure(isDarkTheme ? oneDark : []),
-    });
+  for (const p of openPanes()) {
+    p.view.dispatch({ effects: splitThemeCompartment.reconfigure(isDarkTheme ? oneDark : []) });
   }
 }
 
@@ -4178,6 +4368,7 @@ const commands = {
   'zoom-reset': () => setFontSize(14),
   'toggle-split': () => toggleSplitView(),
   'split-reset': () => resetSplitDivider(),
+  'split-grid': () => toggleGridView(),
   'focus-other-view': () => focusOtherView(),
   'tab': (action) => tabCommand(action),
   'toggle-theme': () => toggleTheme(),
@@ -4188,6 +4379,10 @@ const commands = {
   'toggle-prose': () => toggleProseMode(),
   'grammar-check': () => runGrammarCheck(),
   'compare': () => openCompare(),
+  'focus-next': () => cycleFocus(1),
+  'focus-prev': () => cycleFocus(-1),
+  'sidebar-panel': (panel) => showSidebarPanel(panel),
+  'search-result': (dir) => stepSearchResult(dir === 'prev' ? -1 : 1),
 };
 
 function runCommand(name, arg) {
@@ -4299,6 +4494,7 @@ const TOOLBAR_CATALOG = [
     { id: 'toggle-whitespace', label: 'Spaces', title: 'Toggle Show Space and Tab', cmd: 'toggle-whitespace' },
     { id: 'toggle-eol-markers', label: 'EOL Marks', title: 'Toggle Show End of Line', cmd: 'toggle-eol-markers' },
     { id: 'toggle-split', label: 'Split', title: 'Toggle Split View', cmd: 'toggle-split' },
+    { id: 'split-grid', label: 'Grid', title: 'Four-Pane Grid', cmd: 'split-grid' },
     { id: 'split-reset', label: 'Even Split', title: 'Reset Split to Equal Halves', cmd: 'split-reset' },
     { id: 'focus-other-view', label: 'Other Pane', title: 'Focus Other View', cmd: 'focus-other-view' },
     { id: 'btn-link-map', label: 'Map' },
@@ -4480,6 +4676,7 @@ function initToolbarCustomization() {
 let linkMapOpen = false;
 let linkGraph = null;
 let linkMapCenter = null;
+let linkMapOrder = [];
 let linkMapHover = null;
 
 function normPath(p) {
@@ -4705,7 +4902,7 @@ function renderLinkMap() {
     const n = linkGraph.nodes.get(p);
     const isCenter = p === linkMapCenter;
     const hot = linkMapHover === p || (linkMapHover && (n.out.has(linkMapHover) || n.in.has(linkMapHover)));
-    const cls = ['lm-node', isCenter ? 'lm-center' : '', v.orphan ? 'lm-orphan' : '', hot ? 'lm-hot' : ''].filter(Boolean).join(' ');
+    const cls = ['lm-node', isCenter ? 'lm-center' : '', v.orphan ? 'lm-orphan' : '', hot ? 'lm-hot' : '', linkMapHover === p ? 'lm-focus' : ''].filter(Boolean).join(' ');
     const label = n.name.replace(/\.(md|markdown|txt)$/i, '');
     const labelSide = v.ring === 0 ? 'middle' : (Math.cos(v.angle) < -0.2 ? 'end' : Math.cos(v.angle) > 0.2 ? 'start' : 'middle');
     const lx = v.ring === 0 ? v.x : v.x + 12 * Math.cos(v.angle);
@@ -4715,6 +4912,8 @@ function renderLinkMap() {
 
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   svg.innerHTML = parts.join('');
+
+  linkMapOrder = Array.from(pos.keys());
 
   svg.querySelectorAll('.lm-node').forEach(g => {
     const p = g.dataset.path;
@@ -4740,9 +4939,194 @@ function initLinkMap() {
   document.getElementById('link-map-orphans').addEventListener('change', renderLinkMap);
   document.getElementById('link-map-follow').addEventListener('change', renderLinkMap);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && linkMapOpen) closeLinkMap();
+    if (!linkMapOpen) return;
+    if (e.key === 'Escape') { closeLinkMap(); return; }
+    if (e.target && e.target.tagName === 'INPUT' && e.target.type === 'text') return;
+    // Tab / arrows walk the nodes, Enter opens, Ctrl+Enter re-centers.
+    const step = (e.key === 'Tab' && !e.shiftKey) || e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1
+      : (e.key === 'Tab' && e.shiftKey) || e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+    if (step && linkMapOrder.length) {
+      e.preventDefault();
+      const cur = linkMapOrder.indexOf(linkMapHover);
+      linkMapHover = linkMapOrder[(cur + step + linkMapOrder.length) % linkMapOrder.length];
+      renderLinkMap();
+      return;
+    }
+    if (e.key === 'Enter' && linkMapHover && linkGraph && linkGraph.nodes.has(linkMapHover)) {
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) {
+        linkMapCenter = linkMapHover;
+        document.getElementById('link-map-follow').checked = false;
+        renderLinkMap();
+      } else {
+        const p = linkMapHover;
+        closeLinkMap();
+        openFileFromPath(p);
+      }
+    }
   });
   window.addEventListener('resize', () => { if (linkMapOpen) renderLinkMap(); });
+}
+
+// Keyboard navigation for the sidebar lists and result panels.
+// Each list container is focusable; arrows move a highlight, Enter
+// activates (same as a click), Left/Right fold tree folders, Escape
+// returns to the editor. F6 cycles focus between panes.
+const KEYBOARD_LISTS = [
+  ['file-tree-content', '.tree-item'],
+  ['recent-files-content', '.recent-item'],
+  ['function-list-content', '.fn-item'],
+  ['search-results-list', '.sr-file, .sr-match'],
+  ['closer-results', '.grammar-item'],
+  ['grammar-results', '.grammar-item'],
+];
+
+function visibleListItems(container, selector) {
+  return Array.from(container.querySelectorAll(selector)).filter(el => el.offsetParent !== null);
+}
+
+function setListActive(container, item) {
+  container.querySelectorAll('.kb-active').forEach(el => el.classList.remove('kb-active'));
+  if (item) {
+    item.classList.add('kb-active');
+    item.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function ensureListActive(container) {
+  const entry = KEYBOARD_LISTS.find(([id]) => id === container.id);
+  if (!entry) return;
+  const items = visibleListItems(container, entry[1]);
+  const current = container.querySelector('.kb-active');
+  if (!current || !items.includes(current)) setListActive(container, items[0] || null);
+}
+
+function focusKeyboardList(container) {
+  container.focus({ preventScroll: true });
+  ensureListActive(container);
+}
+
+// Lists re-render asynchronously; keep a highlighted row once they do.
+function listRendered(containerId) {
+  const container = document.getElementById(containerId);
+  if (container && document.activeElement === container) ensureListActive(container);
+}
+
+function initKeyboardLists() {
+  for (const [id, selector] of KEYBOARD_LISTS) {
+    const container = document.getElementById(id);
+    if (!container) continue;
+    container.tabIndex = 0;
+    container.addEventListener('click', (e) => {
+      const item = e.target.closest(selector);
+      if (item && container.contains(item)) setListActive(container, item);
+    });
+    container.addEventListener('keydown', (e) => {
+      const items = visibleListItems(container, selector);
+      if (!items.length) { if (e.key === 'Escape') { e.preventDefault(); focusEditorPane(); } return; }
+      let idx = items.indexOf(container.querySelector('.kb-active'));
+      const move = (n) => { e.preventDefault(); setListActive(container, items[Math.max(0, Math.min(items.length - 1, n))]); };
+      switch (e.key) {
+        case 'ArrowDown': move(idx + 1); break;
+        case 'ArrowUp': move(idx < 0 ? 0 : idx - 1); break;
+        case 'Home': move(0); break;
+        case 'End': move(items.length - 1); break;
+        case 'PageDown': move(idx + 10); break;
+        case 'PageUp': move(idx - 10); break;
+        case 'Enter':
+        case ' ': {
+          e.preventDefault();
+          const item = items[idx];
+          if (!item) break;
+          const fix = e.shiftKey ? item.querySelector('.grammar-item-fix') : null;
+          if (fix) fix.click(); else item.click();
+          break;
+        }
+        case 'ArrowRight':
+        case 'ArrowLeft': {
+          const item = items[idx];
+          if (!item) break;
+          const icon = item.querySelector('.tree-icon.folder, .sr-toggle');
+          if (!icon) break;
+          e.preventDefault();
+          const next = item.nextElementSibling;
+          const expanded = next && (next.classList.contains('expanded') || (next.classList.contains('sr-matches') && !next.classList.contains('collapsed')));
+          if ((e.key === 'ArrowRight' && !expanded) || (e.key === 'ArrowLeft' && expanded)) item.click();
+          break;
+        }
+        case 'Escape':
+          e.preventDefault();
+          focusEditorPane();
+          break;
+        default:
+          break;
+      }
+    });
+  }
+}
+
+function focusEditorPane() {
+  if (proseMode && focusedPane !== 'right') document.getElementById('prose-editor').focus();
+  else { const v = activeView(); if (v) v.focus(); }
+}
+
+function isShown(el) {
+  return !!el && el.offsetParent !== null;
+}
+
+// Ordered list of focusable panes that are currently on screen.
+function focusTargets() {
+  const targets = [];
+  if (sidebarVisible) {
+    const panel = document.querySelector('.sidebar-panel.active');
+    const content = panel && panel.querySelector('[id$="-content"]');
+    if (isShown(content)) targets.push({ el: content, focus: () => focusKeyboardList(content) });
+  }
+  if (proseMode) {
+    const prose = document.getElementById('prose-editor');
+    targets.push({ el: prose, focus: () => prose.focus() });
+  } else {
+    targets.push({ el: editorView.dom, focus: () => editorView.focus() });
+  }
+  for (const p of openPanes()) {
+    if (isShown(p.view.dom)) targets.push({ el: p.view.dom, focus: () => p.view.focus() });
+  }
+  for (const id of ['grammar-results', 'closer-results', 'search-results-list']) {
+    const el = document.getElementById(id);
+    if (isShown(el)) targets.push({ el, focus: () => focusKeyboardList(el) });
+  }
+  return targets;
+}
+
+function cycleFocus(dir) {
+  const targets = focusTargets();
+  if (!targets.length) return;
+  const active = document.activeElement;
+  let idx = targets.findIndex(t => t.el === active || t.el.contains(active));
+  if (idx < 0) idx = dir > 0 ? -1 : 0;
+  targets[(idx + dir + targets.length) % targets.length].focus();
+}
+
+// F4 / Shift+F4: step through Find in Files hits (or closer results when
+// that panel is the one open) and open each one.
+function stepSearchResult(dir) {
+  let container = document.getElementById('search-results-list');
+  let selector = '.sr-match';
+  if (!isShown(container)) {
+    container = document.getElementById('closer-results');
+    selector = '.grammar-item';
+    if (!isShown(container)) return;
+  }
+  const items = visibleListItems(container, selector);
+  if (!items.length) return;
+  const idx = items.indexOf(container.querySelector('.kb-active'));
+  const next = items[(idx + dir + items.length) % items.length];
+  setListActive(container, next);
+  next.click();
+}
+
+function initKeyboardNavigation() {
+  initKeyboardLists();
 }
 
 // Find in Files
@@ -4830,14 +5214,15 @@ function renderSearchResults(query, result) {
     list.appendChild(header);
     list.appendChild(body);
   }
+  listRendered('search-results-list');
 }
 
 async function openFileAtLine(filePath, lineNumber, col) {
   await openFileFromPath(filePath);
   let view = editorView;
-  if (splitEditorView && ((splitMode === 'file' && splitFilePath === filePath)
-      || (splitMode === 'tab' && tabs.find(t => t.id === splitTabId && t.filePath === filePath)))) {
-    if (focusedPane === 'right') view = splitEditorView;
+  if (sp.view && ((sp.mode === 'file' && sp.filePath === filePath)
+      || (sp.mode === 'tab' && tabs.find(t => t.id === sp.tabId && t.filePath === filePath)))) {
+    if (focusedPane === 'right') view = sp.view;
   }
   const doc = view.state.doc;
   const line = doc.line(Math.min(Math.max(1, lineNumber), doc.lines));
@@ -4951,10 +5336,13 @@ function wireEvents() {
     focusedPane = 'left';
     updateStatusBar();
   });
-  document.getElementById('editor-split').addEventListener('focusin', () => {
-    focusedPane = 'right';
-    updateStatusBar();
-    scheduleFunctionListRefresh();
+  PANE_SLOTS.forEach((id, i) => {
+    document.getElementById(id).addEventListener('focusin', () => {
+      focusedPane = 'right';
+      focusedExtra = i;
+      updateStatusBar();
+      scheduleFunctionListRefresh();
+    });
   });
 
   document.getElementById('btn-compare').addEventListener('click', openCompare);
@@ -4971,11 +5359,11 @@ function wireEvents() {
         startCompare(filePath, content);
         return;
       }
-      if (focusedPane === 'right' && splitView && splitMode !== 'compare') {
+      if (focusedPane === 'right' && splitView && sp.mode !== 'compare') {
         openFileInRightPane(filePath);
         return;
       }
-      if (splitMode === 'file' && splitFilePath === filePath) {
+      if (sp.mode === 'file' && sp.filePath === filePath) {
         adoptSplitFileAsTab();
         return;
       }
@@ -5002,13 +5390,13 @@ function wireEvents() {
 
     window.electronAPI.onRequestClose(async () => {
       const dirtyTabs = tabs.filter(t => t.modified);
-      const splitDirty = splitModified && splitFilePath && !compareMode;
-      const count = dirtyTabs.length + (splitDirty ? 1 : 0);
+      const dirtyPanes = compareMode ? [] : openPanes().filter(p => p.mode === 'file' && p.modified && p.filePath);
+      const count = dirtyTabs.length + dirtyPanes.length;
 
       if (count > 0) {
         const choice = await confirmDiscard(
           count === 1
-            ? `Save changes to ${getFileName(dirtyTabs[0] ? dirtyTabs[0].filePath : splitFilePath)}?`
+            ? `Save changes to ${getFileName(dirtyTabs[0] ? dirtyTabs[0].filePath : dirtyPanes[0].filePath)}?`
             : `Save changes to ${count} files?`
         );
         if (choice === 2) return;
@@ -5016,7 +5404,9 @@ function wireEvents() {
           for (const tab of dirtyTabs) {
             if (!(await saveTab(tab))) return;
           }
-          if (splitDirty && !(await saveSplitFile())) return;
+          for (const p of dirtyPanes) {
+            if (!(await saveSplitFile({}, p))) return;
+          }
         }
       }
 
@@ -5054,6 +5444,9 @@ const EDITOR_BINDINGS = [
   ['Column (rectangular) selection', 'Alt + drag'],
   ['Multiple cursors', 'Ctrl + click'],
   ['Open context menu at caret', 'Shift+F10 or Menu key'],
+  ['Lists and panels: move, activate, fold, back to editor', 'Arrows, Enter, Left / Right, Escape'],
+  ['Grammar or closer item: apply its fix', 'Shift+Enter'],
+  ['Link Map: walk nodes, open, re-center', 'Tab / arrows, Enter, Ctrl+Enter'],
 ];
 
 function setMenuItems(items) {
@@ -5241,10 +5634,12 @@ function initShortcutsDialog() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  initPanes();
   initEditor();
   wireEvents();
   initCommandPalette();
   initShortcutsDialog();
+  initKeyboardNavigation();
   setEditorFont(document.getElementById('font-select').value);
   initSidebarTabs();
   initSidebarResize();
