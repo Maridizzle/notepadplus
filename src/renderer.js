@@ -1,6 +1,6 @@
 import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine, Decoration, ViewPlugin, WidgetType } from '@codemirror/view';
 import { EditorState, Compartment, RangeSetBuilder } from '@codemirror/state';
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
+import { defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineAndIndent } from '@codemirror/commands';
 import { searchKeymap, highlightSelectionMatches, openSearchPanel, closeSearchPanel } from '@codemirror/search';
 import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { foldGutter, indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldKeymap, foldAll, unfoldAll } from '@codemirror/language';
@@ -19,6 +19,7 @@ import { php } from '@codemirror/lang-php';
 import { rust } from '@codemirror/lang-rust';
 import { sql } from '@codemirror/lang-sql';
 import * as Diff from 'diff';
+import { isTriggerChar, computeFix } from './autocap.js';
 
 const LANGUAGES = {
   '.js': { name: 'JavaScript', ext: javascript },
@@ -131,6 +132,78 @@ const wikiLinkPlugin = ViewPlugin.fromClass(class {
     }
   }
 });
+
+// Sentence-start auto-capitalization (see autocap.js for the rules).
+let autoCapEnabled = true;
+
+function autoCapFixForState(state, pos) {
+  return computeFix((from, to) => state.sliceDoc(from, to), pos);
+}
+
+// Fires for typed characters. When a word-ending character is typed right
+// after a sentence-start word, the word is fixed and the character inserted
+// in a single transaction, so one Ctrl+Z reverts both.
+const autoCapInputHandler = EditorView.inputHandler.of((view, from, to, text) => {
+  if (!autoCapEnabled || from !== to || !isTriggerChar(text)) return false;
+  const fix = autoCapFixForState(view.state, from);
+  if (!fix) return false;
+  view.dispatch({
+    changes: [fix, { from, to, insert: text }],
+    selection: { anchor: from + text.length },
+    userEvent: 'input.type',
+    scrollIntoView: true,
+  });
+  return true;
+});
+
+// Enter is handled by the keymap, not the input handler, so it gets its own
+// binding that fixes the word and then does the normal newline.
+const autoCapKeymap = [{
+  key: 'Enter',
+  run: (view) => {
+    if (!autoCapEnabled) return false;
+    const { from, to } = view.state.selection.main;
+    if (from !== to) return false;
+    const fix = autoCapFixForState(view.state, from);
+    if (!fix) return false;
+    view.dispatch({ changes: fix, userEvent: 'input.type' });
+    return insertNewlineAndIndent(view);
+  },
+}];
+
+const autoCapExtension = [autoCapInputHandler, keymap.of(autoCapKeymap)];
+
+// Same behavior for the plain textarea used in Prose mode.
+function autoCapProseKeydown(e) {
+  if (!autoCapEnabled || e.ctrlKey || e.metaKey || e.altKey) return;
+  const isEnter = e.key === 'Enter';
+  if (!isEnter && !isTriggerChar(e.key)) return;
+
+  const textarea = e.target;
+  const pos = textarea.selectionStart;
+  if (pos !== textarea.selectionEnd) return;
+
+  const value = textarea.value;
+  const fix = computeFix((from, to) => value.slice(from, to), pos);
+  if (!fix) return;
+
+  textarea.setSelectionRange(fix.from, fix.to);
+  let applied = false;
+  try {
+    applied = document.execCommand('insertText', false, fix.insert);
+  } catch (err) {
+    applied = false;
+  }
+  if (!applied) {
+    textarea.setRangeText(fix.insert, fix.from, fix.to, 'end');
+  }
+  textarea.setSelectionRange(pos, pos);
+}
+
+function toggleAutoCap() {
+  autoCapEnabled = !autoCapEnabled;
+  document.getElementById('btn-autocap').classList.toggle('active', autoCapEnabled);
+}
 
 function getFileExtension(filePath) {
   if (!filePath) return '';
@@ -467,6 +540,7 @@ function initEditor() {
       grammarPlugin,
       comparePluginLeft,
       themeCompartment.of(oneDark),
+      autoCapExtension,
       keymap.of([
         ...closeBracketsKeymap,
         ...defaultKeymap,
@@ -1417,6 +1491,7 @@ function createSplitEditor(content, langExt, readOnly) {
       }
     }, { decorations: v => v.decorations }),
     isDarkTheme ? oneDark : [],
+    autoCapExtension,
     keymap.of([
       ...closeBracketsKeymap,
       ...defaultKeymap,
@@ -1858,7 +1933,9 @@ function wireEvents() {
   });
 
   document.getElementById('btn-prose').addEventListener('click', toggleProseMode);
+  document.getElementById('btn-autocap').addEventListener('click', toggleAutoCap);
 
+  document.getElementById('prose-editor').addEventListener('keydown', autoCapProseKeydown);
   document.getElementById('prose-editor').addEventListener('input', () => {
     markModified();
   });
