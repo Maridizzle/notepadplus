@@ -1,12 +1,31 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
 let mainWindow;
 let recentFiles = [];
 const MAX_RECENT = 15;
+let rendererReady = false;
+let closeConfirmed = false;
+let pendingOpenPaths = [];
 
 const sessionFile = path.join(app.getPath('userData'), 'session.json');
+const recentFile = path.join(app.getPath('userData'), 'recent.json');
+
+function loadRecentFiles() {
+  try {
+    if (fs.existsSync(recentFile)) {
+      const data = JSON.parse(fs.readFileSync(recentFile, 'utf-8'));
+      if (Array.isArray(data)) recentFiles = data.filter(f => typeof f === 'string');
+    }
+  } catch (e) {}
+}
+
+function saveRecentFiles() {
+  try {
+    fs.writeFileSync(recentFile, JSON.stringify(recentFiles), 'utf-8');
+  } catch (e) {}
+}
 
 function loadSession() {
   try {
@@ -27,6 +46,594 @@ function addRecentFile(filePath) {
   recentFiles = recentFiles.filter(f => f !== filePath);
   recentFiles.unshift(filePath);
   if (recentFiles.length > MAX_RECENT) recentFiles.length = MAX_RECENT;
+  saveRecentFiles();
+}
+
+function send(name, arg) {
+  if (mainWindow) mainWindow.webContents.send('menu-command', name, arg);
+}
+
+const CP1252_HIGH = [
+  0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+  0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+  0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+  0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
+];
+const CP1252_REVERSE = new Map(CP1252_HIGH.map((cp, i) => [cp, 0x80 + i]));
+
+function decodeAnsi(buf) {
+  const out = new Array(buf.length);
+  for (let i = 0; i < buf.length; i++) {
+    const b = buf[i];
+    out[i] = String.fromCharCode(b >= 0x80 && b <= 0x9F ? CP1252_HIGH[b - 0x80] : b);
+  }
+  return out.join('');
+}
+
+function encodeAnsi(str) {
+  const bytes = Buffer.alloc(str.length);
+  for (let i = 0; i < str.length; i++) {
+    const cp = str.charCodeAt(i);
+    if (cp < 0x80 || (cp >= 0xA0 && cp <= 0xFF)) bytes[i] = cp;
+    else if (CP1252_REVERSE.has(cp)) bytes[i] = CP1252_REVERSE.get(cp);
+    else bytes[i] = 0x3F;
+  }
+  return bytes;
+}
+
+function detectEncoding(buf) {
+  if (buf.length >= 3 && buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) return 'utf8bom';
+  if (buf.length >= 2 && buf[0] === 0xFF && buf[1] === 0xFE) return 'utf16le';
+  if (buf.length >= 2 && buf[0] === 0xFE && buf[1] === 0xFF) return 'utf16be';
+  const sample = buf.subarray(0, Math.min(buf.length, 4096));
+  if (sample.length >= 4) {
+    let oddNul = 0;
+    let evenNul = 0;
+    for (let i = 0; i < sample.length; i++) {
+      if (sample[i] === 0) {
+        if (i % 2) oddNul++;
+        else evenNul++;
+      }
+    }
+    const pairs = sample.length / 2;
+    if (oddNul > pairs * 0.3 && evenNul < pairs * 0.05) return 'utf16le';
+    if (evenNul > pairs * 0.3 && oddNul < pairs * 0.05) return 'utf16be';
+  }
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(buf);
+    return 'utf8';
+  } catch {
+    return 'ansi';
+  }
+}
+
+function decodeBuffer(buf, encoding) {
+  switch (encoding) {
+    case 'utf8bom':
+      return buf.toString('utf8', buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF ? 3 : 0);
+    case 'utf16le':
+      return buf.toString('utf16le', buf[0] === 0xFF && buf[1] === 0xFE ? 2 : 0);
+    case 'utf16be': {
+      const start = buf[0] === 0xFE && buf[1] === 0xFF ? 2 : 0;
+      let body = Buffer.from(buf.subarray(start));
+      if (body.length % 2) body = body.subarray(0, body.length - 1);
+      body.swap16();
+      return body.toString('utf16le');
+    }
+    case 'ansi':
+      return decodeAnsi(buf);
+    default:
+      return buf.toString('utf8');
+  }
+}
+
+function encodeString(str, encoding) {
+  switch (encoding) {
+    case 'utf8bom':
+      return Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(str, 'utf8')]);
+    case 'utf16le':
+      return Buffer.concat([Buffer.from([0xFF, 0xFE]), Buffer.from(str, 'utf16le')]);
+    case 'utf16be': {
+      const body = Buffer.from(str, 'utf16le');
+      body.swap16();
+      return Buffer.concat([Buffer.from([0xFE, 0xFF]), body]);
+    }
+    case 'ansi':
+      return encodeAnsi(str);
+    default:
+      return Buffer.from(str, 'utf8');
+  }
+}
+
+function readTextFile(filePath, forceEncoding) {
+  const buf = fs.readFileSync(filePath);
+  const encoding = forceEncoding || detectEncoding(buf);
+  return { content: decodeBuffer(buf, encoding), encoding };
+}
+
+function globToRegExp(glob) {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+  return new RegExp('^' + escaped + '$', 'i');
+}
+
+async function findInFiles(opts) {
+  const { dir, query, regex, matchCase, wholeWord, filters, subfolders } = opts;
+  if (!query) return { success: false, error: 'Nothing to search for.' };
+  let pattern;
+  try {
+    let src = regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (wholeWord) src = `\\b(?:${src})\\b`;
+    pattern = new RegExp(src, matchCase ? '' : 'i');
+  } catch (err) {
+    return { success: false, error: 'Invalid regular expression: ' + err.message };
+  }
+  const filterRes = (filters || '').split(/[\s,;]+/).filter(Boolean).map(globToRegExp);
+  const MAX_MATCHES = 5000;
+  const MAX_SIZE = 5 * 1024 * 1024;
+  const results = [];
+  let total = 0;
+  let filesSearched = 0;
+
+  async function walk(d) {
+    let entries;
+    try {
+      entries = await fs.promises.readdir(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (total >= MAX_MATCHES) return;
+      if (e.name.startsWith('.')) continue;
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) {
+        if (subfolders && e.name !== 'node_modules') await walk(p);
+        continue;
+      }
+      if (!e.isFile()) continue;
+      if (filterRes.length && !filterRes.some(r => r.test(e.name))) continue;
+      let buf;
+      try {
+        const st = await fs.promises.stat(p);
+        if (st.size > MAX_SIZE) continue;
+        buf = await fs.promises.readFile(p);
+      } catch {
+        continue;
+      }
+      const encoding = detectEncoding(buf);
+      if (encoding !== 'utf16le' && encoding !== 'utf16be' && buf.subarray(0, 8192).includes(0)) continue;
+      filesSearched++;
+      const lines = decodeBuffer(buf, encoding).split(/\r\n|\r|\n/);
+      const matches = [];
+      for (let i = 0; i < lines.length; i++) {
+        const m = pattern.exec(lines[i]);
+        if (m) {
+          matches.push({ line: i + 1, col: m.index + 1, text: lines[i].slice(0, 300) });
+          total++;
+          if (total >= MAX_MATCHES) break;
+        }
+      }
+      if (matches.length) results.push({ filePath: p, matches });
+    }
+  }
+
+  try {
+    if (!fs.statSync(dir).isDirectory()) return { success: false, error: 'Directory not found.' };
+  } catch {
+    return { success: false, error: 'Directory not found.' };
+  }
+  await walk(dir);
+  return { success: true, results, total, filesSearched, truncated: total >= MAX_MATCHES };
+}
+
+function filePathsFromArgv(argv, cwd) {
+  return argv
+    .slice(1)
+    .filter(a => a && !a.startsWith('-'))
+    .map(a => path.resolve(cwd || process.cwd(), a))
+    .filter(p => {
+      try { return fs.statSync(p).isFile(); } catch { return false; }
+    });
+}
+
+function openPathsInRenderer(paths) {
+  if (!paths.length) return;
+  if (!mainWindow || !rendererReady) {
+    pendingOpenPaths.push(...paths);
+    return;
+  }
+  for (const filePath of paths) {
+    try {
+      const { content, encoding } = readTextFile(filePath);
+      addRecentFile(filePath);
+      mainWindow.webContents.send('file-opened', { filePath, content, encoding });
+    } catch (err) {
+      dialog.showErrorBox('Error', `Could not read file: ${err.message}`);
+    }
+  }
+}
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (event, argv, workingDirectory) => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+    openPathsInRenderer(filePathsFromArgv(argv, workingDirectory));
+  });
+}
+
+app.on('open-file', (event, filePath) => {
+  event.preventDefault();
+  openPathsInRenderer([filePath]);
+});
+
+let languageList = [];
+
+// Flattened copy of the menu for the renderer's command palette and
+// shortcut reference. Only label, path, command name, arg and accelerator
+// travel; click handlers stay here.
+function serializeMenu(template, trail = []) {
+  const out = [];
+  for (const item of template) {
+    if (!item || item.type === 'separator' || item.enabled === false) continue;
+    if (item.submenu) {
+      out.push(...serializeMenu(item.submenu, [...trail, item.label]));
+    } else if (item.label) {
+      out.push({
+        label: item.label.replace(/\.\.\.$/, ''),
+        path: trail,
+        name: item.cmdName || null,
+        arg: item.arg === undefined ? null : item.arg,
+        accelerator: item.accelerator || null,
+        native: item.cmdName ? null : item.label,
+      });
+    }
+  }
+  return out;
+}
+
+let menuTemplate = [];
+
+function buildMenu() {
+  const cmd = (label, name, extra = {}) => ({ label, cmdName: name, click: () => send(name, extra.arg), ...extra });
+
+  menuTemplate = menuTemplateFor(cmd);
+  return Menu.buildFromTemplate(menuTemplate);
+}
+
+function sendMenuTemplate() {
+  if (mainWindow && rendererReady) {
+    mainWindow.webContents.send('menu-template', serializeMenu(menuTemplate));
+  }
+}
+
+function menuTemplateFor(cmd) {
+  return [
+    {
+      label: 'File',
+      submenu: [
+        cmd('New', 'new', { accelerator: 'CmdOrCtrl+N' }),
+        { label: 'Open...', accelerator: 'CmdOrCtrl+O', click: () => handleFileOpen() },
+        cmd('Reload from Disk', 'reload', { accelerator: 'CmdOrCtrl+R' }),
+        { type: 'separator' },
+        cmd('Save', 'save', { accelerator: 'CmdOrCtrl+S' }),
+        cmd('Save As...', 'save-as', { accelerator: 'CmdOrCtrl+Alt+S' }),
+        cmd('Save a Copy As...', 'save-copy-as', { accelerator: 'CmdOrCtrl+Alt+Shift+S' }),
+        cmd('Save All', 'save-all', { accelerator: 'CmdOrCtrl+Shift+S' }),
+        cmd('Rename...', 'rename', { accelerator: 'CmdOrCtrl+Alt+R' }),
+        { type: 'separator' },
+        cmd('Close', 'close', { accelerator: 'CmdOrCtrl+W' }),
+        cmd('Close All', 'close-all', { accelerator: 'CmdOrCtrl+Shift+W' }),
+        {
+          label: 'Close More',
+          submenu: [
+            cmd('Close All But Active Document', 'close-others', { accelerator: 'CmdOrCtrl+Alt+W' }),
+            cmd('Close All to the Left', 'close-left', { accelerator: 'CmdOrCtrl+Alt+Shift+Left' }),
+            cmd('Close All to the Right', 'close-right', { accelerator: 'CmdOrCtrl+Alt+Shift+Right' }),
+            cmd('Close All Unchanged', 'close-unchanged', { accelerator: 'CmdOrCtrl+Alt+Shift+W' }),
+          ],
+        },
+        { type: 'separator' },
+        { label: 'Open Folder...', accelerator: 'CmdOrCtrl+Shift+O', click: () => handleFolderOpen() },
+        cmd('Open Containing Folder', 'open-containing-folder', { accelerator: 'CmdOrCtrl+Alt+O' }),
+        cmd('Open in Default Viewer', 'open-default-viewer', { accelerator: 'CmdOrCtrl+Alt+Shift+O' }),
+        { type: 'separator' },
+        cmd('File Summary...', 'summary', { accelerator: 'CmdOrCtrl+Alt+I' }),
+        { type: 'separator' },
+        cmd('Print...', 'print', { accelerator: 'CmdOrCtrl+P' }),
+        { type: 'separator' },
+        { label: 'Exit', accelerator: 'CmdOrCtrl+Q', click: () => app.quit() },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        cmd('Undo', 'undo', { accelerator: 'CmdOrCtrl+Z', registerAccelerator: false }),
+        cmd('Redo', 'redo', { accelerator: 'CmdOrCtrl+Y', registerAccelerator: false }),
+        { type: 'separator' },
+        { label: 'Cut', accelerator: 'CmdOrCtrl+X', role: 'cut' },
+        { label: 'Copy', accelerator: 'CmdOrCtrl+C', role: 'copy' },
+        { label: 'Paste', accelerator: 'CmdOrCtrl+V', role: 'paste' },
+        { label: 'Select All', accelerator: 'CmdOrCtrl+A', role: 'selectAll' },
+        { type: 'separator' },
+        {
+          label: 'Copy to Clipboard',
+          submenu: [
+            cmd('Current Full File Path', 'copy-path', { accelerator: 'CmdOrCtrl+Alt+Shift+C' }),
+            cmd('Current File Name', 'copy-filename', { accelerator: 'CmdOrCtrl+Alt+Shift+N' }),
+            cmd('Current Directory Path', 'copy-dir', { accelerator: 'CmdOrCtrl+Alt+Shift+F' }),
+          ],
+        },
+        { type: 'separator' },
+        {
+          label: 'Convert Case to',
+          submenu: [
+            cmd('UPPERCASE', 'transform', { arg: 'uppercase', accelerator: 'CmdOrCtrl+Shift+U' }),
+            cmd('lowercase', 'transform', { arg: 'lowercase', accelerator: 'CmdOrCtrl+U' }),
+            cmd('Proper Case', 'transform', { arg: 'propercase', accelerator: 'CmdOrCtrl+Alt+U' }),
+            cmd('Title Case', 'transform', { arg: 'titlecase', accelerator: 'CmdOrCtrl+Alt+T' }),
+            cmd('Sentence case', 'transform', { arg: 'sentencecase', accelerator: 'CmdOrCtrl+Alt+Shift+U' }),
+            cmd('iNVERT cASE', 'transform', { arg: 'invertcase', accelerator: 'CmdOrCtrl+Alt+Shift+I' }),
+            cmd('ranDOm CasE', 'transform', { arg: 'randomcase', accelerator: 'CmdOrCtrl+Alt+Shift+R' }),
+            cmd('camelCase', 'transform', { arg: 'camelcase', accelerator: 'CmdOrCtrl+Alt+Shift+M' }),
+          ],
+        },
+        {
+          label: 'Line Operations',
+          submenu: [
+            cmd('Duplicate Current Line', 'line-op', { arg: 'duplicate', accelerator: 'CmdOrCtrl+Shift+D' }),
+            cmd('Join Lines', 'line-op', { arg: 'join', accelerator: 'CmdOrCtrl+J' }),
+            cmd('Move Up Current Line', 'line-op', { arg: 'move-up', accelerator: 'Alt+Up', registerAccelerator: false }),
+            cmd('Move Down Current Line', 'line-op', { arg: 'move-down', accelerator: 'Alt+Down', registerAccelerator: false }),
+            { type: 'separator' },
+            cmd('Sort Lines Lexicographically Ascending', 'line-op', { arg: 'sort-asc', accelerator: 'CmdOrCtrl+Alt+A' }),
+            cmd('Sort Lines Lexicographically Descending', 'line-op', { arg: 'sort-desc', accelerator: 'CmdOrCtrl+Alt+Z' }),
+            cmd('Sort Lines Ascending Ignoring Case', 'line-op', { arg: 'sort-asc-ci', accelerator: 'CmdOrCtrl+Alt+Shift+A' }),
+            cmd('Sort Lines Descending Ignoring Case', 'line-op', { arg: 'sort-desc-ci', accelerator: 'CmdOrCtrl+Alt+Shift+Z' }),
+            cmd('Sort Lines As Numbers Ascending', 'line-op', { arg: 'sort-num-asc', accelerator: 'CmdOrCtrl+Alt+1' }),
+            cmd('Sort Lines As Numbers Descending', 'line-op', { arg: 'sort-num-desc', accelerator: 'CmdOrCtrl+Alt+2' }),
+            { type: 'separator' },
+            cmd('Remove Duplicate Lines', 'line-op', { arg: 'remove-dupes', accelerator: 'CmdOrCtrl+Alt+D' }),
+            cmd('Remove Consecutive Duplicate Lines', 'line-op', { arg: 'remove-consecutive-dupes', accelerator: 'CmdOrCtrl+Alt+Shift+D' }),
+            cmd('Remove Empty Lines', 'line-op', { arg: 'remove-empty', accelerator: 'CmdOrCtrl+Alt+E' }),
+            cmd('Trim Trailing Whitespace', 'line-op', { arg: 'trim', accelerator: 'CmdOrCtrl+Alt+Shift+T' }),
+            cmd('Reverse Line Order', 'line-op', { arg: 'reverse', accelerator: 'CmdOrCtrl+Alt+Shift+B' }),
+            cmd('Randomize Line Order', 'line-op', { arg: 'randomize', accelerator: 'CmdOrCtrl+Alt+Shift+H' }),
+          ],
+        },
+        {
+          label: 'Comment/Uncomment',
+          submenu: [
+            cmd('Toggle Single Line Comment', 'toggle-line-comment', { accelerator: 'CmdOrCtrl+/', registerAccelerator: false }),
+            cmd('Toggle Block Comment', 'toggle-block-comment', { accelerator: 'Shift+Alt+A', registerAccelerator: false }),
+          ],
+        },
+        cmd('Column Editor...', 'column-editor', { accelerator: 'Alt+C' }),
+        {
+          label: 'EOL Conversion',
+          submenu: [
+            cmd('Windows (CR LF)', 'set-eol', { arg: '\r\n', accelerator: 'CmdOrCtrl+Alt+Shift+1' }),
+            cmd('Unix (LF)', 'set-eol', { arg: '\n', accelerator: 'CmdOrCtrl+Alt+Shift+2' }),
+            cmd('Macintosh (CR)', 'set-eol', { arg: '\r', accelerator: 'CmdOrCtrl+Alt+Shift+3' }),
+          ],
+        },
+      ],
+    },
+    {
+      label: 'Search',
+      submenu: [
+        cmd('Find...', 'find', { accelerator: 'CmdOrCtrl+F' }),
+        cmd('Replace...', 'replace', { accelerator: 'CmdOrCtrl+H' }),
+        cmd('Find in Files...', 'find-in-files', { accelerator: 'CmdOrCtrl+Shift+F' }),
+        cmd('Next Search Result', 'search-result', { arg: 'next', accelerator: 'F4' }),
+        cmd('Previous Search Result', 'search-result', { arg: 'prev', accelerator: 'Shift+F4' }),
+        { type: 'separator' },
+        cmd('Go to Line...', 'goto-line', { accelerator: 'CmdOrCtrl+G' }),
+        { type: 'separator' },
+        {
+          label: 'Bookmark',
+          submenu: [
+            cmd('Toggle Bookmark', 'bookmark', { arg: 'toggle', accelerator: 'CmdOrCtrl+F2' }),
+            cmd('Next Bookmark', 'bookmark', { arg: 'next', accelerator: 'F2' }),
+            cmd('Previous Bookmark', 'bookmark', { arg: 'prev', accelerator: 'Shift+F2' }),
+            cmd('Clear All Bookmarks', 'bookmark', { arg: 'clear', accelerator: 'CmdOrCtrl+Shift+F2' }),
+            { type: 'separator' },
+            cmd('Cut Bookmarked Lines', 'bookmark', { arg: 'cut', accelerator: 'Alt+F2' }),
+            cmd('Copy Bookmarked Lines', 'bookmark', { arg: 'copy', accelerator: 'Alt+Shift+F2' }),
+            cmd('Remove Bookmarked Lines', 'bookmark', { arg: 'remove', accelerator: 'CmdOrCtrl+Alt+F2' }),
+            cmd('Remove Unmarked Lines', 'bookmark', { arg: 'remove-unmarked', accelerator: 'CmdOrCtrl+Alt+Shift+F2' }),
+            cmd('Inverse Bookmark', 'bookmark', { arg: 'inverse', accelerator: 'Alt+F3' }),
+          ],
+        },
+        {
+          label: 'Change History',
+          submenu: [
+            cmd('Go to Next Change', 'change-history', { arg: 'next', accelerator: 'F7' }),
+            cmd('Go to Previous Change', 'change-history', { arg: 'prev', accelerator: 'Shift+F7' }),
+            cmd('Clear Change History', 'change-history', { arg: 'clear', accelerator: 'CmdOrCtrl+Shift+F7' }),
+            { type: 'separator' },
+            cmd('Toggle Change History Margin', 'change-history', { arg: 'toggle', accelerator: 'CmdOrCtrl+Alt+F7' }),
+          ],
+        },
+        { type: 'separator' },
+        cmd('Check Closers (Brackets and Quotes)...', 'check-closers', { accelerator: 'CmdOrCtrl+Shift+K' }),
+      ],
+    },
+    {
+      label: 'Encoding',
+      submenu: [
+        cmd('Convert to UTF-8', 'set-encoding', { arg: 'utf8', accelerator: 'CmdOrCtrl+Alt+Shift+4' }),
+        cmd('Convert to UTF-8-BOM', 'set-encoding', { arg: 'utf8bom', accelerator: 'CmdOrCtrl+Alt+Shift+5' }),
+        cmd('Convert to UTF-16 LE', 'set-encoding', { arg: 'utf16le', accelerator: 'CmdOrCtrl+Alt+Shift+6' }),
+        cmd('Convert to UTF-16 BE', 'set-encoding', { arg: 'utf16be', accelerator: 'CmdOrCtrl+Alt+Shift+7' }),
+        cmd('Convert to ANSI (Windows-1252)', 'set-encoding', { arg: 'ansi', accelerator: 'CmdOrCtrl+Alt+Shift+8' }),
+        { type: 'separator' },
+        {
+          label: 'Reinterpret File As',
+          submenu: [
+            cmd('UTF-8', 'reopen-encoding', { arg: 'utf8', accelerator: 'CmdOrCtrl+Alt+4' }),
+            cmd('UTF-8-BOM', 'reopen-encoding', { arg: 'utf8bom', accelerator: 'CmdOrCtrl+Alt+5' }),
+            cmd('UTF-16 LE', 'reopen-encoding', { arg: 'utf16le', accelerator: 'CmdOrCtrl+Alt+6' }),
+            cmd('UTF-16 BE', 'reopen-encoding', { arg: 'utf16be', accelerator: 'CmdOrCtrl+Alt+7' }),
+            cmd('ANSI (Windows-1252)', 'reopen-encoding', { arg: 'ansi', accelerator: 'CmdOrCtrl+Alt+8' }),
+          ],
+        },
+      ],
+    },
+    {
+      label: 'Language',
+      submenu: [
+        cmd('Choose Language...', 'language-picker', { accelerator: 'CmdOrCtrl+Alt+L' }),
+        { type: 'separator' },
+        ...(languageList.length
+          ? languageList.map(l => cmd(l.name, 'set-language', { arg: l.key }))
+          : [{ label: '(loading)', enabled: false }]),
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        cmd('Toggle Toolbar', 'toggle-toolbar', { accelerator: 'CmdOrCtrl+Shift+T' }),
+        cmd('Customize Toolbar...', 'customize-toolbar', { accelerator: 'CmdOrCtrl+Alt+B' }),
+        cmd('Toggle Sidebar', 'toggle-sidebar', { accelerator: 'CmdOrCtrl+B' }),
+        cmd('Toggle Minimap', 'toggle-minimap', { accelerator: 'CmdOrCtrl+Alt+M' }),
+        { type: 'separator' },
+        {
+          label: 'Show Symbol',
+          submenu: [
+            cmd('Toggle Show Space and Tab', 'toggle-whitespace', { accelerator: 'CmdOrCtrl+Alt+Space' }),
+            cmd('Toggle Show End of Line', 'toggle-eol-markers', { accelerator: 'CmdOrCtrl+Alt+Shift+Space' }),
+          ],
+        },
+        { type: 'separator' },
+        cmd('Fold All', 'fold-all', { accelerator: 'CmdOrCtrl+Alt+Shift+[' }),
+        cmd('Unfold All', 'unfold-all', { accelerator: 'CmdOrCtrl+Alt+Shift+]' }),
+        { type: 'separator' },
+        cmd('Toggle Word Wrap', 'toggle-wrap', { accelerator: 'Alt+Z' }),
+        { type: 'separator' },
+        cmd('Zoom In', 'zoom-in', { accelerator: 'CmdOrCtrl+=' }),
+        cmd('Zoom Out', 'zoom-out', { accelerator: 'CmdOrCtrl+-' }),
+        cmd('Reset Zoom', 'zoom-reset', { accelerator: 'CmdOrCtrl+0' }),
+        { type: 'separator' },
+        cmd('Toggle Split View', 'toggle-split', { accelerator: 'CmdOrCtrl+\\' }),
+        cmd('Four-Pane Grid', 'split-grid', { accelerator: 'CmdOrCtrl+Alt+Shift+\\' }),
+        cmd('Reset Split to Equal Halves', 'split-reset', { accelerator: 'CmdOrCtrl+Alt+=' }),
+        cmd('Focus Other View', 'focus-other-view', { accelerator: 'F8' }),
+        cmd('Focus Next Pane', 'focus-next', { accelerator: 'F6' }),
+        cmd('Focus Previous Pane', 'focus-prev', { accelerator: 'Shift+F6' }),
+        { type: 'separator' },
+        {
+          label: 'Sidebar Panel',
+          submenu: [
+            cmd('Files', 'sidebar-panel', { arg: 'file-tree', accelerator: 'Alt+1' }),
+            cmd('Recent', 'sidebar-panel', { arg: 'recent-files', accelerator: 'Alt+2' }),
+            cmd('Functions', 'sidebar-panel', { arg: 'function-list', accelerator: 'Alt+3' }),
+          ],
+        },
+        { type: 'separator' },
+        cmd('Link Map', 'link-map', { accelerator: 'CmdOrCtrl+Shift+M' }),
+        { type: 'separator' },
+        {
+          label: 'Tab',
+          submenu: [
+            cmd('Next Tab', 'tab', { arg: 'next', accelerator: 'CmdOrCtrl+Tab', registerAccelerator: false }),
+            cmd('Previous Tab', 'tab', { arg: 'prev', accelerator: 'CmdOrCtrl+Shift+Tab', registerAccelerator: false }),
+            cmd('First Tab', 'tab', { arg: 'first', accelerator: 'Alt+Home' }),
+            cmd('Last Tab', 'tab', { arg: 'last', accelerator: 'Alt+End' }),
+            { type: 'separator' },
+            cmd('Move Tab Forward', 'tab', { arg: 'move-forward', accelerator: 'CmdOrCtrl+Shift+PageDown', registerAccelerator: false }),
+            cmd('Move Tab Backward', 'tab', { arg: 'move-backward', accelerator: 'CmdOrCtrl+Shift+PageUp', registerAccelerator: false }),
+            { type: 'separator' },
+            ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n =>
+              cmd(`Tab ${n}`, 'tab', { arg: `goto:${n}`, accelerator: `CmdOrCtrl+${n}` })
+            ),
+          ],
+        },
+        { type: 'separator' },
+        {
+          label: 'Always on Top',
+          type: 'checkbox',
+          checked: false,
+          accelerator: 'CmdOrCtrl+Alt+P',
+          click: (item) => { if (mainWindow) mainWindow.setAlwaysOnTop(item.checked); },
+        },
+        { type: 'separator' },
+        cmd('Toggle Theme (Dark/Light)', 'toggle-theme', { accelerator: 'CmdOrCtrl+Alt+Shift+Y' }),
+        { type: 'separator' },
+        { label: 'Toggle Dev Tools', accelerator: 'F12', role: 'toggleDevTools' },
+      ],
+    },
+    {
+      label: 'Tools',
+      submenu: [
+        cmd('Toggle Prose Mode (Grammarly)', 'toggle-prose', { accelerator: 'CmdOrCtrl+Alt+Shift+P' }),
+        cmd('Check Grammar', 'grammar-check', { accelerator: 'CmdOrCtrl+Alt+G' }),
+        cmd('Compare With File...', 'compare', { accelerator: 'CmdOrCtrl+Alt+C' }),
+      ],
+    },
+    {
+      label: 'Help',
+      submenu: [
+        cmd('Keyboard Shortcuts...', 'shortcuts', { accelerator: 'F1' }),
+        cmd('Command Palette...', 'command-palette', { accelerator: 'CmdOrCtrl+Shift+P' }),
+        { type: 'separator' },
+        {
+          label: 'About NotepadPlus',
+          accelerator: 'CmdOrCtrl+F1',
+          click: () => {
+            dialog.showMessageBox(mainWindow, {
+              type: 'info',
+              title: 'About NotepadPlus',
+              message: `NotepadPlus v${app.getVersion()}`,
+              detail: 'A Notepad++ inspired editor with wiki-style file links, custom fonts, background colors, and Grammarly compatibility.\n\nBuilt with Electron + CodeMirror 6.\nBy Maridizzle.',
+            });
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Grammarly',
+          accelerator: 'Shift+F1',
+          click: () => {
+            dialog.showMessageBox(mainWindow, {
+              type: 'info',
+              title: 'Grammarly Compatibility',
+              message: 'Grammarly Support',
+              detail: 'Click the "Prose" button in the toolbar to switch to a plain text editor that Grammarly Desktop can detect.\n\nProse mode syncs your content to a standard text area. When you toggle back, changes return to the code editor.\n\nRequires: Grammarly Desktop app for Windows.',
+            });
+          },
+        },
+      ],
+    },
+  ];
+}
+
+// Menu items without a command name (Open, Open Folder, Exit, About,
+// Grammarly, Always on Top, Dev Tools) are run here by label when the
+// renderer's palette picks them.
+function runNativeMenuItem(label) {
+  const appMenu = Menu.getApplicationMenu();
+  if (!appMenu) return false;
+  const roleActions = {
+    cut: () => mainWindow.webContents.cut(),
+    copy: () => mainWindow.webContents.copy(),
+    paste: () => mainWindow.webContents.paste(),
+    selectAll: () => mainWindow.webContents.selectAll(),
+    toggleDevTools: () => mainWindow.webContents.toggleDevTools(),
+  };
+  const walk = (items) => {
+    for (const item of items) {
+      if (item.submenu) { if (walk(item.submenu.items)) return true; continue; }
+      if (item.label !== label) continue;
+      if (item.role && mainWindow && roleActions[item.role]) { roleActions[item.role](); return true; }
+      if (item.type === 'checkbox') item.checked = !item.checked;
+      if (typeof item.click === 'function') { item.click(item, mainWindow, {}); return true; }
+    }
+    return false;
+  };
+  return walk(appMenu.items);
 }
 
 function createWindow() {
@@ -66,219 +673,33 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
 
   mainWindow.webContents.on('did-finish-load', () => {
+    rendererReady = true;
+    sendMenuTemplate();
     const session = loadSession();
-    if (session && session.tabs && session.tabs.length > 0) {
+    if (session) {
       mainWindow.webContents.send('restore-session', session);
     }
+    const startupPaths = [...pendingOpenPaths, ...filePathsFromArgv(process.argv)];
+    pendingOpenPaths = [];
+    openPathsInRenderer(startupPaths);
   });
 
-  const menu = Menu.buildFromTemplate([
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'New',
-          accelerator: 'CmdOrCtrl+N',
-          click: () => mainWindow.webContents.send('menu-new'),
-        },
-        {
-          label: 'Open...',
-          accelerator: 'CmdOrCtrl+O',
-          click: () => handleFileOpen(),
-        },
-        {
-          label: 'Save',
-          accelerator: 'CmdOrCtrl+S',
-          click: () => mainWindow.webContents.send('menu-save'),
-        },
-        {
-          label: 'Save As...',
-          accelerator: 'CmdOrCtrl+Shift+S',
-          click: () => mainWindow.webContents.send('menu-save-as'),
-        },
-        { type: 'separator' },
-        {
-          label: 'Open Folder...',
-          accelerator: 'CmdOrCtrl+Shift+O',
-          click: () => handleFolderOpen(),
-        },
-        { type: 'separator' },
-        {
-          label: 'Exit',
-          accelerator: 'CmdOrCtrl+Q',
-          click: () => app.quit(),
-        },
-      ],
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', role: 'undo' },
-        { label: 'Redo', accelerator: 'CmdOrCtrl+Shift+Z', role: 'redo' },
-        { type: 'separator' },
-        { label: 'Cut', accelerator: 'CmdOrCtrl+X', role: 'cut' },
-        { label: 'Copy', accelerator: 'CmdOrCtrl+C', role: 'copy' },
-        { label: 'Paste', accelerator: 'CmdOrCtrl+V', role: 'paste' },
-        { label: 'Select All', accelerator: 'CmdOrCtrl+A', role: 'selectAll' },
-        { type: 'separator' },
-        {
-          label: 'Find...',
-          accelerator: 'CmdOrCtrl+F',
-          click: () => mainWindow.webContents.send('menu-find'),
-        },
-        {
-          label: 'Replace...',
-          accelerator: 'CmdOrCtrl+H',
-          click: () => mainWindow.webContents.send('menu-replace'),
-        },
-        {
-          label: 'Go to Line...',
-          accelerator: 'CmdOrCtrl+G',
-          click: () => mainWindow.webContents.send('menu-goto-line'),
-        },
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        {
-          label: 'Toggle Sidebar',
-          accelerator: 'CmdOrCtrl+B',
-          click: () => mainWindow.webContents.send('menu-toggle-sidebar'),
-        },
-        {
-          label: 'Toggle Minimap',
-          click: () => mainWindow.webContents.send('menu-toggle-minimap'),
-        },
-        { type: 'separator' },
-        {
-          label: 'Fold All',
-          click: () => mainWindow.webContents.send('menu-fold-all'),
-        },
-        {
-          label: 'Unfold All',
-          click: () => mainWindow.webContents.send('menu-unfold-all'),
-        },
-        { type: 'separator' },
-        {
-          label: 'Toggle Word Wrap',
-          accelerator: 'Alt+Z',
-          click: () => mainWindow.webContents.send('menu-toggle-wrap'),
-        },
-        { type: 'separator' },
-        {
-          label: 'Zoom In',
-          accelerator: 'CmdOrCtrl+=',
-          click: () => mainWindow.webContents.send('menu-zoom-in'),
-        },
-        {
-          label: 'Zoom Out',
-          accelerator: 'CmdOrCtrl+-',
-          click: () => mainWindow.webContents.send('menu-zoom-out'),
-        },
-        {
-          label: 'Reset Zoom',
-          accelerator: 'CmdOrCtrl+0',
-          click: () => mainWindow.webContents.send('menu-zoom-reset'),
-        },
-        { type: 'separator' },
-        {
-          label: 'Toggle Split View',
-          accelerator: 'CmdOrCtrl+\\',
-          click: () => mainWindow.webContents.send('menu-toggle-split'),
-        },
-        { type: 'separator' },
-        {
-          label: 'Toggle Theme (Dark/Light)',
-          click: () => mainWindow.webContents.send('menu-toggle-theme'),
-        },
-        { type: 'separator' },
-        { label: 'Toggle Dev Tools', accelerator: 'F12', role: 'toggleDevTools' },
-      ],
-    },
-    {
-      label: 'Tools',
-      submenu: [
-        {
-          label: 'UPPERCASE',
-          accelerator: 'CmdOrCtrl+Shift+U',
-          click: () => mainWindow.webContents.send('menu-transform', 'uppercase'),
-        },
-        {
-          label: 'lowercase',
-          accelerator: 'CmdOrCtrl+U',
-          click: () => mainWindow.webContents.send('menu-transform', 'lowercase'),
-        },
-        {
-          label: 'Title Case',
-          click: () => mainWindow.webContents.send('menu-transform', 'titlecase'),
-        },
-        {
-          label: 'camelCase',
-          click: () => mainWindow.webContents.send('menu-transform', 'camelcase'),
-        },
-        { type: 'separator' },
-        {
-          label: 'Sort Lines Ascending',
-          click: () => mainWindow.webContents.send('menu-line-op', 'sort-asc'),
-        },
-        {
-          label: 'Sort Lines Descending',
-          click: () => mainWindow.webContents.send('menu-line-op', 'sort-desc'),
-        },
-        {
-          label: 'Remove Duplicate Lines',
-          click: () => mainWindow.webContents.send('menu-line-op', 'remove-dupes'),
-        },
-        {
-          label: 'Remove Empty Lines',
-          click: () => mainWindow.webContents.send('menu-line-op', 'remove-empty'),
-        },
-        {
-          label: 'Trim Trailing Whitespace',
-          click: () => mainWindow.webContents.send('menu-line-op', 'trim'),
-        },
-        {
-          label: 'Reverse Lines',
-          click: () => mainWindow.webContents.send('menu-line-op', 'reverse'),
-        },
-      ],
-    },
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: 'About NotepadPlus',
-          click: () => {
-            dialog.showMessageBox(mainWindow, {
-              type: 'info',
-              title: 'About NotepadPlus',
-              message: 'NotepadPlus v1.0.0',
-              detail: 'A Notepad++ inspired editor with wiki-style file links, custom fonts, background colors, and Grammarly compatibility.\n\nBuilt with Electron + CodeMirror 6.\nBy Maridizzle.',
-            });
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Grammarly',
-          click: () => {
-            dialog.showMessageBox(mainWindow, {
-              type: 'info',
-              title: 'Grammarly Compatibility',
-              message: 'Grammarly Support',
-              detail: 'Click the "Prose" button in the toolbar to switch to a plain text editor that Grammarly Desktop can detect.\n\nProse mode syncs your content to a standard text area. When you toggle back, changes return to the code editor.\n\nRequires: Grammarly Desktop app for Windows.',
-            });
-          },
-        },
-      ],
-    },
-  ]);
-  Menu.setApplicationMenu(menu);
+  mainWindow.on('close', (event) => {
+    if (closeConfirmed || !rendererReady) return;
+    event.preventDefault();
+    mainWindow.webContents.send('request-close');
+  });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+
+  Menu.setApplicationMenu(buildMenu());
 }
 
 async function handleFileOpen() {
   const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openFile'],
+    properties: ['openFile', 'multiSelections'],
     filters: [
       { name: 'All Files', extensions: ['*'] },
       { name: 'Text Files', extensions: ['txt', 'md', 'log'] },
@@ -286,16 +707,8 @@ async function handleFileOpen() {
     ],
   });
 
-  if (!result.canceled && result.filePaths.length > 0) {
-    const filePath = result.filePaths[0];
-    try {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      addRecentFile(filePath);
-      mainWindow.webContents.send('file-opened', { filePath, content });
-    } catch (err) {
-      dialog.showErrorBox('Error', `Could not read file: ${err.message}`);
-    }
-  }
+  if (result.canceled) return;
+  openPathsInRenderer(result.filePaths);
 }
 
 async function handleFolderOpen() {
@@ -316,7 +729,7 @@ ipcMain.handle('dialog-open-folder', async () => {
   await handleFolderOpen();
 });
 
-ipcMain.handle('dialog-save-as', async (event, { content, defaultPath }) => {
+ipcMain.handle('dialog-save-as', async (event, { content, defaultPath, encoding }) => {
   const result = await dialog.showSaveDialog(mainWindow, {
     defaultPath: defaultPath || 'untitled.txt',
     filters: [
@@ -327,7 +740,7 @@ ipcMain.handle('dialog-save-as', async (event, { content, defaultPath }) => {
 
   if (!result.canceled && result.filePath) {
     try {
-      fs.writeFileSync(result.filePath, content, 'utf-8');
+      fs.writeFileSync(result.filePath, encodeString(content, encoding || 'utf8'));
       return { success: true, filePath: result.filePath };
     } catch (err) {
       return { success: false, error: err.message };
@@ -336,20 +749,203 @@ ipcMain.handle('dialog-save-as', async (event, { content, defaultPath }) => {
   return { success: false, canceled: true };
 });
 
-ipcMain.handle('file-save', async (event, { filePath, content }) => {
+ipcMain.handle('file-save', async (event, { filePath, content, encoding }) => {
   try {
-    fs.writeFileSync(filePath, content, 'utf-8');
+    fs.writeFileSync(filePath, encodeString(content, encoding || 'utf8'));
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
   }
 });
 
-ipcMain.handle('file-read', async (event, { filePath }) => {
+ipcMain.handle('file-read', async (event, { filePath, encoding }) => {
   try {
-    const content = fs.readFileSync(filePath, 'utf-8');
+    const result = readTextFile(filePath, encoding);
     addRecentFile(filePath);
-    return { success: true, content };
+    return { success: true, content: result.content, encoding: result.encoding };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.on('language-list', (event, list) => {
+  if (Array.isArray(list)) {
+    languageList = list.filter(l => l && typeof l.key === 'string' && typeof l.name === 'string');
+    Menu.setApplicationMenu(buildMenu());
+    sendMenuTemplate();
+  }
+});
+
+ipcMain.on('run-native-menu-item', (event, label) => {
+  if (typeof label === 'string') runNativeMenuItem(label);
+});
+
+// Keyboard-opened context menu (Shift+F10 / Menu key). The native
+// right-click menu gets spelling suggestions from Chromium; this one
+// cannot, so it offers the edit actions and Add to Dictionary for the
+// word under the caret.
+ipcMain.on('show-context-menu', (event, params) => {
+  if (!mainWindow) return;
+  const p = params && typeof params === 'object' ? params : {};
+  const word = typeof p.word === 'string' ? p.word.slice(0, 100) : '';
+  const items = [
+    { label: 'Cut', role: 'cut' },
+    { label: 'Copy', role: 'copy' },
+    { label: 'Paste', role: 'paste' },
+    { type: 'separator' },
+    { label: 'Select All', role: 'selectAll' },
+  ];
+  if (word && /^[\p{L}\p{M}'’-]+$/u.test(word)) {
+    items.push({ type: 'separator' });
+    items.push({
+      label: `Add "${word}" to Dictionary`,
+      click: () => mainWindow.webContents.session.addWordToSpellCheckerDictionary(word),
+    });
+  }
+  const x = Number.isFinite(p.x) ? Math.round(p.x) : undefined;
+  const y = Number.isFinite(p.y) ? Math.round(p.y) : undefined;
+  Menu.buildFromTemplate(items).popup({ window: mainWindow, x, y });
+});
+
+ipcMain.handle('file-rename', async (event, { oldPath, newPath }) => {
+  try {
+    if (fs.existsSync(newPath)) return { success: false, error: 'A file with that name already exists.' };
+    fs.renameSync(oldPath, newPath);
+    recentFiles = recentFiles.map(f => (f === oldPath ? newPath : f));
+    saveRecentFiles();
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+ipcMain.handle('print-text', async (event, { title, text, fontFamily, fontSize }) => {
+  const win = new BrowserWindow({
+    show: false,
+    parent: mainWindow || undefined,
+    webPreferences: { contextIsolation: true, sandbox: true },
+  });
+  const safeFont = String(fontFamily || 'monospace').replace(/[^A-Za-z0-9 ,'"\-]/g, '');
+  const safeSize = Math.max(6, Math.min(72, parseInt(fontSize, 10) || 10));
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title || 'Untitled')}</title>`
+    + `<style>body{margin:15mm;color:#000;background:#fff;font-family:${safeFont};font-size:${safeSize}pt;line-height:1.4;white-space:pre-wrap;word-wrap:break-word;}</style>`
+    + `</head><body>${escapeHtml(text || '')}</body></html>`;
+  await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  return new Promise((resolve) => {
+    win.webContents.print({ printBackground: false }, (success, reason) => {
+      win.close();
+      resolve({ success, reason: reason || '' });
+    });
+  });
+});
+
+async function scanLinks(rootDir) {
+  const files = [];
+  async function walk(d) {
+    let entries;
+    try {
+      entries = await fs.promises.readdir(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { await walk(p); continue; }
+      if (!e.isFile()) continue;
+      if (!/\.(md|markdown|txt)$/i.test(e.name)) continue;
+      files.push(p);
+    }
+  }
+  await walk(rootDir);
+
+  const byName = new Map();
+  for (const p of files) {
+    const base = path.basename(p);
+    const noExt = base.replace(/\.[^.]+$/, '');
+    for (const key of [base.toLowerCase(), noExt.toLowerCase()]) {
+      if (!byName.has(key)) byName.set(key, []);
+      byName.get(key).push(p);
+    }
+  }
+
+  const resolveLink = (fromPath, text) => {
+    const fromDir = path.dirname(fromPath);
+    const cleaned = text.trim().replace(/\\/g, '/');
+    const candidates = [cleaned, cleaned + '.md', cleaned + '.txt', cleaned + '.markdown'];
+    for (const c of candidates) {
+      const abs = path.resolve(fromDir, c);
+      if (files.includes(abs)) return abs;
+      const absRoot = path.resolve(rootDir, c);
+      if (files.includes(absRoot)) return absRoot;
+    }
+    const leaf = cleaned.split('/').pop().toLowerCase();
+    const matches = byName.get(leaf) || byName.get(leaf.replace(/\.[^.]+$/, '')) || [];
+    if (matches.length) {
+      const sameDir = matches.find(m => path.dirname(m) === fromDir);
+      return sameDir || matches[0];
+    }
+    return null;
+  };
+
+  const links = [];
+  const MAX_SIZE = 2 * 1024 * 1024;
+  for (const p of files) {
+    let buf;
+    try {
+      const st = await fs.promises.stat(p);
+      if (st.size > MAX_SIZE) continue;
+      buf = await fs.promises.readFile(p);
+    } catch {
+      continue;
+    }
+    const text = decodeBuffer(buf, detectEncoding(buf));
+    const re = /\[\[([^\]\n]+)\]\]/g;
+    let m;
+    const seen = new Set();
+    while ((m = re.exec(text)) !== null) {
+      const target = m[1].split('|')[0].split('#')[0];
+      const to = resolveLink(p, target);
+      const key = to || ('missing:' + target.trim().toLowerCase());
+      if (seen.has(key)) continue;
+      seen.add(key);
+      links.push({ from: p, to, text: target.trim() });
+    }
+  }
+  return { files, links };
+}
+
+ipcMain.handle('edit-action', async (event, { action }) => {
+  const allowed = ['cut', 'copy', 'paste', 'selectAll'];
+  if (mainWindow && allowed.includes(action)) mainWindow.webContents[action]();
+});
+
+ipcMain.handle('scan-links', async (event, { dirPath }) => {
+  try {
+    if (!fs.statSync(dirPath).isDirectory()) return { success: false, error: 'Folder not found.' };
+    const result = await scanLinks(dirPath);
+    return { success: true, ...result };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('find-in-files', async (event, opts) => {
+  try {
+    return await findInFiles(opts);
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('file-stat', async (event, { filePath }) => {
+  try {
+    const st = fs.statSync(filePath);
+    return { success: true, size: st.size, mtimeMs: st.mtimeMs, birthtimeMs: st.birthtimeMs };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -441,7 +1037,60 @@ ipcMain.on('save-session', (event, data) => {
   saveSession(data);
 });
 
-app.whenReady().then(createWindow);
+ipcMain.handle('confirm-close', async (event, { message }) => {
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    buttons: ['Save', "Don't Save", 'Cancel'],
+    defaultId: 0,
+    cancelId: 2,
+    message,
+  });
+  return result.response;
+});
+
+ipcMain.handle('confirm-action', async (event, { message, detail, buttons, defaultId, cancelId }) => {
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    buttons: buttons || ['OK', 'Cancel'],
+    defaultId: defaultId == null ? 0 : defaultId,
+    cancelId: cancelId == null ? (buttons ? buttons.length - 1 : 1) : cancelId,
+    message,
+    detail: detail || undefined,
+  });
+  return result.response;
+});
+
+ipcMain.on('close-confirmed', () => {
+  closeConfirmed = true;
+  if (mainWindow) mainWindow.close();
+});
+
+ipcMain.handle('show-error', async (event, { title, message }) => {
+  dialog.showErrorBox(title || 'Error', message || '');
+});
+
+ipcMain.handle('show-info', async (event, { title, message, detail }) => {
+  await dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    title: title || 'NotepadPlus',
+    message: message || '',
+    detail: detail || undefined,
+  });
+});
+
+ipcMain.handle('shell-show-item', async (event, { filePath }) => {
+  shell.showItemInFolder(filePath);
+});
+
+ipcMain.handle('shell-open-path', async (event, { filePath }) => {
+  const err = await shell.openPath(filePath);
+  return err ? { success: false, error: err } : { success: true };
+});
+
+app.whenReady().then(() => {
+  loadRecentFiles();
+  createWindow();
+});
 
 app.on('window-all-closed', () => {
   app.quit();

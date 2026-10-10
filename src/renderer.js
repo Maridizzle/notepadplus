@@ -1,9 +1,54 @@
-import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine, Decoration, ViewPlugin, WidgetType } from '@codemirror/view';
-import { EditorState, Compartment, RangeSetBuilder } from '@codemirror/state';
-import { defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineAndIndent } from '@codemirror/commands';
+import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, highlightWhitespace, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine, Decoration, ViewPlugin, WidgetType, gutter, GutterMarker } from '@codemirror/view';
+import { EditorState, Compartment, RangeSetBuilder, StateEffect, StateField, RangeSet } from '@codemirror/state';
+import { defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineAndIndent, undo, redo, copyLineDown, moveLineUp, moveLineDown, toggleComment, toggleBlockComment } from '@codemirror/commands';
 import { searchKeymap, highlightSelectionMatches, openSearchPanel, closeSearchPanel } from '@codemirror/search';
 import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
-import { foldGutter, indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldKeymap, foldAll, unfoldAll } from '@codemirror/language';
+import { foldGutter, indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldKeymap, foldAll, unfoldAll, StreamLanguage, syntaxTree, ensureSyntaxTree } from '@codemirror/language';
+import { shell } from '@codemirror/legacy-modes/mode/shell';
+import { powerShell } from '@codemirror/legacy-modes/mode/powershell';
+import { yaml } from '@codemirror/legacy-modes/mode/yaml';
+import { toml } from '@codemirror/legacy-modes/mode/toml';
+import { lua } from '@codemirror/legacy-modes/mode/lua';
+import { ruby } from '@codemirror/legacy-modes/mode/ruby';
+import { perl } from '@codemirror/legacy-modes/mode/perl';
+import { go } from '@codemirror/legacy-modes/mode/go';
+import { swift } from '@codemirror/legacy-modes/mode/swift';
+import { csharp, kotlin, scala, dart, objectiveC } from '@codemirror/legacy-modes/mode/clike';
+import { haskell } from '@codemirror/legacy-modes/mode/haskell';
+import { erlang } from '@codemirror/legacy-modes/mode/erlang';
+import { r } from '@codemirror/legacy-modes/mode/r';
+import { pascal } from '@codemirror/legacy-modes/mode/pascal';
+import { fortran } from '@codemirror/legacy-modes/mode/fortran';
+import { vb } from '@codemirror/legacy-modes/mode/vb';
+import { vbScript } from '@codemirror/legacy-modes/mode/vbscript';
+import { tcl } from '@codemirror/legacy-modes/mode/tcl';
+import { scheme } from '@codemirror/legacy-modes/mode/scheme';
+import { commonLisp } from '@codemirror/legacy-modes/mode/commonlisp';
+import { clojure } from '@codemirror/legacy-modes/mode/clojure';
+import { stex } from '@codemirror/legacy-modes/mode/stex';
+import { nsis } from '@codemirror/legacy-modes/mode/nsis';
+import { cmake } from '@codemirror/legacy-modes/mode/cmake';
+import { groovy } from '@codemirror/legacy-modes/mode/groovy';
+import { julia } from '@codemirror/legacy-modes/mode/julia';
+import { octave } from '@codemirror/legacy-modes/mode/octave';
+import { sas } from '@codemirror/legacy-modes/mode/sas';
+import { verilog } from '@codemirror/legacy-modes/mode/verilog';
+import { vhdl } from '@codemirror/legacy-modes/mode/vhdl';
+import { coffeeScript } from '@codemirror/legacy-modes/mode/coffeescript';
+import { cobol } from '@codemirror/legacy-modes/mode/cobol';
+import { d } from '@codemirror/legacy-modes/mode/d';
+import { gas } from '@codemirror/legacy-modes/mode/gas';
+import { nginx } from '@codemirror/legacy-modes/mode/nginx';
+import { properties } from '@codemirror/legacy-modes/mode/properties';
+import { dockerFile } from '@codemirror/legacy-modes/mode/dockerfile';
+import { diff as diffMode } from '@codemirror/legacy-modes/mode/diff';
+import { crystal } from '@codemirror/legacy-modes/mode/crystal';
+import { elm } from '@codemirror/legacy-modes/mode/elm';
+import { oCaml, fSharp } from '@codemirror/legacy-modes/mode/mllike';
+import { smalltalk } from '@codemirror/legacy-modes/mode/smalltalk';
+import { protobuf } from '@codemirror/legacy-modes/mode/protobuf';
+import { sass } from '@codemirror/legacy-modes/mode/sass';
+import { stylus } from '@codemirror/legacy-modes/mode/stylus';
 import { oneDark } from '@codemirror/theme-one-dark';
 
 import { javascript } from '@codemirror/lang-javascript';
@@ -21,39 +66,957 @@ import { sql } from '@codemirror/lang-sql';
 import * as Diff from 'diff';
 import { isTriggerChar, computeFix } from './autocap.js';
 
-const LANGUAGES = {
-  '.js': { name: 'JavaScript', ext: javascript },
-  '.mjs': { name: 'JavaScript', ext: javascript },
-  '.jsx': { name: 'JSX', ext: () => javascript({ jsx: true }) },
-  '.ts': { name: 'TypeScript', ext: () => javascript({ typescript: true }) },
-  '.tsx': { name: 'TSX', ext: () => javascript({ typescript: true, jsx: true }) },
-  '.html': { name: 'HTML', ext: html },
-  '.htm': { name: 'HTML', ext: html },
-  '.css': { name: 'CSS', ext: css },
-  '.py': { name: 'Python', ext: python },
-  '.json': { name: 'JSON', ext: json },
-  '.md': { name: 'Markdown', ext: markdown },
-  '.markdown': { name: 'Markdown', ext: markdown },
-  '.xml': { name: 'XML', ext: xml },
-  '.svg': { name: 'XML', ext: xml },
-  '.c': { name: 'C', ext: cpp },
-  '.cpp': { name: 'C++', ext: cpp },
-  '.h': { name: 'C/C++ Header', ext: cpp },
-  '.hpp': { name: 'C++ Header', ext: cpp },
-  '.java': { name: 'Java', ext: java },
-  '.php': { name: 'PHP', ext: php },
-  '.rs': { name: 'Rust', ext: rust },
-  '.sql': { name: 'SQL', ext: sql },
-  '.txt': { name: 'Plain Text', ext: null },
-  '.log': { name: 'Plain Text', ext: null },
-  '.ini': { name: 'Plain Text', ext: null },
-  '.cfg': { name: 'Plain Text', ext: null },
+const stream = (mode) => () => StreamLanguage.define(mode);
+
+const LANG_DEFS = [
+  { key: 'plain', name: 'Plain Text', exts: ['.txt', '.log', '.text'], load: null },
+  { key: 'javascript', name: 'JavaScript', exts: ['.js', '.mjs', '.cjs'], load: () => javascript() },
+  { key: 'jsx', name: 'JSX', exts: ['.jsx'], load: () => javascript({ jsx: true }) },
+  { key: 'typescript', name: 'TypeScript', exts: ['.ts', '.mts', '.cts'], load: () => javascript({ typescript: true }) },
+  { key: 'tsx', name: 'TSX', exts: ['.tsx'], load: () => javascript({ typescript: true, jsx: true }) },
+  { key: 'html', name: 'HTML', exts: ['.html', '.htm', '.xhtml'], load: () => html() },
+  { key: 'css', name: 'CSS', exts: ['.css', '.scss', '.less'], load: () => css() },
+  { key: 'python', name: 'Python', exts: ['.py', '.pyw', '.pyi'], load: () => python() },
+  { key: 'json', name: 'JSON', exts: ['.json', '.json5', '.jsonc'], load: () => json() },
+  { key: 'markdown', name: 'Markdown', exts: ['.md', '.markdown', '.mdown'], load: () => markdown() },
+  { key: 'xml', name: 'XML', exts: ['.xml', '.svg', '.xsl', '.xslt', '.xsd', '.plist', '.csproj', '.vcxproj'], load: () => xml() },
+  { key: 'c', name: 'C', exts: ['.c', '.h'], load: () => cpp() },
+  { key: 'cpp', name: 'C++', exts: ['.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx', '.ino'], load: () => cpp() },
+  { key: 'java', name: 'Java', exts: ['.java'], load: () => java() },
+  { key: 'php', name: 'PHP', exts: ['.php', '.phtml'], load: () => php() },
+  { key: 'rust', name: 'Rust', exts: ['.rs'], load: () => rust() },
+  { key: 'sql', name: 'SQL', exts: ['.sql'], load: () => sql() },
+  { key: 'shell', name: 'Shell', exts: ['.sh', '.bash', '.zsh', '.ksh'], load: stream(shell) },
+  { key: 'powershell', name: 'PowerShell', exts: ['.ps1', '.psm1', '.psd1'], load: stream(powerShell) },
+  { key: 'yaml', name: 'YAML', exts: ['.yml', '.yaml'], load: stream(yaml) },
+  { key: 'toml', name: 'TOML', exts: ['.toml'], load: stream(toml) },
+  { key: 'ini', name: 'INI', exts: ['.ini', '.cfg', '.conf', '.properties', '.env'], load: stream(properties) },
+  { key: 'lua', name: 'Lua', exts: ['.lua'], load: stream(lua) },
+  { key: 'ruby', name: 'Ruby', exts: ['.rb', '.rake', '.gemspec'], load: stream(ruby) },
+  { key: 'perl', name: 'Perl', exts: ['.pl', '.pm', '.t'], load: stream(perl) },
+  { key: 'go', name: 'Go', exts: ['.go'], load: stream(go) },
+  { key: 'swift', name: 'Swift', exts: ['.swift'], load: stream(swift) },
+  { key: 'csharp', name: 'C#', exts: ['.cs'], load: stream(csharp) },
+  { key: 'kotlin', name: 'Kotlin', exts: ['.kt', '.kts'], load: stream(kotlin) },
+  { key: 'scala', name: 'Scala', exts: ['.scala', '.sc'], load: stream(scala) },
+  { key: 'dart', name: 'Dart', exts: ['.dart'], load: stream(dart) },
+  { key: 'objectivec', name: 'Objective-C', exts: ['.mm'], load: stream(objectiveC) },
+  { key: 'haskell', name: 'Haskell', exts: ['.hs', '.lhs'], load: stream(haskell) },
+  { key: 'erlang', name: 'Erlang', exts: ['.erl', '.hrl'], load: stream(erlang) },
+  { key: 'r', name: 'R', exts: ['.r', '.rmd'], load: stream(r) },
+  { key: 'pascal', name: 'Pascal', exts: ['.pas', '.pp', '.dpr'], load: stream(pascal) },
+  { key: 'fortran', name: 'Fortran', exts: ['.f', '.for', '.f90', '.f95', '.f03'], load: stream(fortran) },
+  { key: 'vb', name: 'Visual Basic', exts: ['.vb', '.bas'], load: stream(vb) },
+  { key: 'vbscript', name: 'VBScript', exts: ['.vbs'], load: stream(vbScript) },
+  { key: 'tcl', name: 'TCL', exts: ['.tcl'], load: stream(tcl) },
+  { key: 'scheme', name: 'Scheme', exts: ['.scm', '.ss', '.rkt'], load: stream(scheme) },
+  { key: 'lisp', name: 'Lisp', exts: ['.lisp', '.cl', '.el'], load: stream(commonLisp) },
+  { key: 'clojure', name: 'Clojure', exts: ['.clj', '.cljs', '.edn'], load: stream(clojure) },
+  { key: 'latex', name: 'LaTeX', exts: ['.tex', '.latex', '.sty', '.bib'], load: stream(stex) },
+  { key: 'nsis', name: 'NSIS', exts: ['.nsi', '.nsh'], load: stream(nsis) },
+  { key: 'cmake', name: 'CMake', exts: ['.cmake'], load: stream(cmake) },
+  { key: 'groovy', name: 'Groovy', exts: ['.groovy', '.gradle', '.gvy'], load: stream(groovy) },
+  { key: 'julia', name: 'Julia', exts: ['.jl'], load: stream(julia) },
+  { key: 'matlab', name: 'MATLAB', exts: ['.m'], load: stream(octave) },
+  { key: 'sas', name: 'SAS', exts: ['.sas'], load: stream(sas) },
+  { key: 'verilog', name: 'Verilog', exts: ['.v', '.sv', '.svh'], load: stream(verilog) },
+  { key: 'vhdl', name: 'VHDL', exts: ['.vhd', '.vhdl'], load: stream(vhdl) },
+  { key: 'coffeescript', name: 'CoffeeScript', exts: ['.coffee'], load: stream(coffeeScript) },
+  { key: 'cobol', name: 'COBOL', exts: ['.cob', '.cbl', '.cpy'], load: stream(cobol) },
+  { key: 'd', name: 'D', exts: ['.d'], load: stream(d) },
+  { key: 'assembly', name: 'Assembly', exts: ['.s', '.asm'], load: stream(gas) },
+  { key: 'nginx', name: 'NGINX', exts: [], load: stream(nginx) },
+  { key: 'dockerfile', name: 'Dockerfile', exts: ['.dockerfile'], load: stream(dockerFile) },
+  { key: 'diff', name: 'Diff', exts: ['.diff', '.patch'], load: stream(diffMode) },
+  { key: 'crystal', name: 'Crystal', exts: ['.cr'], load: stream(crystal) },
+  { key: 'elm', name: 'Elm', exts: ['.elm'], load: stream(elm) },
+  { key: 'ocaml', name: 'OCaml', exts: ['.ml', '.mli'], load: stream(oCaml) },
+  { key: 'fsharp', name: 'F#', exts: ['.fs', '.fsx', '.fsi'], load: stream(fSharp) },
+  { key: 'smalltalk', name: 'Smalltalk', exts: ['.st'], load: stream(smalltalk) },
+  { key: 'protobuf', name: 'Protocol Buffers', exts: ['.proto'], load: stream(protobuf) },
+  { key: 'sass', name: 'Sass', exts: ['.sass'], load: stream(sass) },
+  { key: 'stylus', name: 'Stylus', exts: ['.styl'], load: stream(stylus) },
+];
+
+const LANG_BY_KEY = Object.fromEntries(LANG_DEFS.map(l => [l.key, l]));
+const LANG_BY_EXT = {};
+for (const lang of LANG_DEFS) for (const ext of lang.exts) LANG_BY_EXT[ext] = lang.key;
+
+const LANG_BY_FILENAME = {
+  'dockerfile': 'dockerfile',
+  'containerfile': 'dockerfile',
+  'cmakelists.txt': 'cmake',
+  'nginx.conf': 'nginx',
+  'makefile': 'shell',
+  'gnumakefile': 'shell',
+  'rakefile': 'ruby',
+  'gemfile': 'ruby',
+  'vagrantfile': 'ruby',
+  '.bashrc': 'shell',
+  '.bash_profile': 'shell',
+  '.zshrc': 'shell',
+  '.profile': 'shell',
+  '.gitconfig': 'ini',
+  '.editorconfig': 'ini',
+  'package.json': 'json',
 };
+
+const SHEBANG_RULES = [
+  [/python/, 'python'],
+  [/node|deno|bun/, 'javascript'],
+  [/\b(ba|z|k|da)?sh\b/, 'shell'],
+  [/perl/, 'perl'],
+  [/ruby/, 'ruby'],
+  [/php/, 'php'],
+  [/lua/, 'lua'],
+  [/pwsh|powershell/, 'powershell'],
+  [/tclsh|wish/, 'tcl'],
+];
+
+const langExtCache = new Map();
+
+function languageExtensionFor(key) {
+  const lang = LANG_BY_KEY[key];
+  if (!lang || !lang.load) return [];
+  if (!langExtCache.has(key)) langExtCache.set(key, lang.load());
+  return [langExtCache.get(key)];
+}
+
+function languageName(key) {
+  return (LANG_BY_KEY[key] || LANG_BY_KEY.plain).name;
+}
+
+function detectLanguageKey(filePath, content) {
+  if (filePath) {
+    const name = getFileName(filePath).toLowerCase();
+    if (LANG_BY_FILENAME[name]) return LANG_BY_FILENAME[name];
+    const ext = getFileExtension(filePath);
+    if (ext && LANG_BY_EXT[ext]) return LANG_BY_EXT[ext];
+  }
+  if (content && content.startsWith('#!')) {
+    const firstLine = content.slice(0, content.indexOf('\n') < 0 ? content.length : content.indexOf('\n'));
+    for (const [re, key] of SHEBANG_RULES) {
+      if (re.test(firstLine)) return key;
+    }
+  }
+  if (content && /^\s*<\?xml/.test(content)) return 'xml';
+  if (content && /^\s*<(!doctype html|html)/i.test(content)) return 'html';
+  return 'plain';
+}
+
+function languageMenuList() {
+  return LANG_DEFS
+    .map(l => ({ key: l.key, name: l.name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
 
 const languageCompartment = new Compartment();
 const wrapCompartment = new Compartment();
+const splitLanguageCompartment = new Compartment();
 const splitWrapCompartment = new Compartment();
 const splitFontCompartment = new Compartment();
+const whitespaceCompartment = new Compartment();
+const splitWhitespaceCompartment = new Compartment();
+const eolCompartment = new Compartment();
+const splitEolCompartment = new Compartment();
+let showWhitespace = false;
+let showEol = false;
+
+function eolLabel(eol) {
+  return eol === '\r\n' ? 'CRLF' : eol === '\r' ? 'CR' : 'LF';
+}
+
+const ENCODING_LABELS = {
+  utf8: 'UTF-8',
+  utf8bom: 'UTF-8-BOM',
+  utf16le: 'UTF-16 LE',
+  utf16be: 'UTF-16 BE',
+  ansi: 'ANSI',
+};
+
+function encodingLabel(enc) {
+  return ENCODING_LABELS[enc] || 'UTF-8';
+}
+
+// Bookmarks
+const bookmarkEffect = StateEffect.define({
+  map: (v, mapping) => ({ pos: mapping.mapPos(v.pos), on: v.on }),
+});
+const clearBookmarksEffect = StateEffect.define();
+
+const bookmarkMarker = new class extends GutterMarker {
+  toDOM() {
+    const span = document.createElement('span');
+    span.className = 'cm-bookmark-dot';
+    span.textContent = '●';
+    return span;
+  }
+}();
+
+function normalizeBookmarks(set, doc) {
+  const starts = new Set();
+  const iter = set.iter();
+  while (iter.value) {
+    starts.add(doc.lineAt(Math.min(iter.from, doc.length)).from);
+    iter.next();
+  }
+  return RangeSet.of([...starts].sort((a, b) => a - b).map(p => bookmarkMarker.range(p)));
+}
+
+const bookmarkField = StateField.define({
+  create() {
+    return RangeSet.empty;
+  },
+  update(set, tr) {
+    if (tr.docChanged) {
+      const oldDoc = tr.startState.doc;
+      const deleted = [];
+      tr.changes.iterChangedRanges((fromA, toA) => {
+        if (toA > fromA) deleted.push([fromA, toA]);
+      });
+      if (deleted.length) {
+        set = set.update({
+          filter: (from) => {
+            const line = oldDoc.lineAt(Math.min(from, oldDoc.length));
+            return !deleted.some(([a, b]) =>
+              (line.to < oldDoc.length && a <= line.from && b >= line.to + 1)
+              || (line.from > 0 && a <= line.from - 1 && b >= line.to));
+          },
+        });
+      }
+      set = set.map(tr.changes);
+      set = normalizeBookmarks(set, tr.state.doc);
+    }
+    for (const e of tr.effects) {
+      if (e.is(clearBookmarksEffect)) {
+        set = RangeSet.empty;
+      } else if (e.is(bookmarkEffect)) {
+        const lineFrom = tr.state.doc.lineAt(e.value.pos).from;
+        set = set.update({ filter: from => from !== lineFrom });
+        if (e.value.on) set = set.update({ add: [bookmarkMarker.range(lineFrom)] });
+      }
+    }
+    return set;
+  },
+});
+
+const bookmarkGutter = gutter({
+  class: 'cm-bookmark-gutter',
+  markers: v => v.state.field(bookmarkField),
+  initialSpacer: () => bookmarkMarker,
+  domEventHandlers: {
+    mousedown(view, line) {
+      toggleBookmark(view, line.from);
+      return true;
+    },
+  },
+});
+
+function bookmarkExtensions() {
+  return [bookmarkField, bookmarkGutter];
+}
+
+// Change history margin
+const markSavedEffect = StateEffect.define();
+const clearHistoryEffect = StateEffect.define();
+const changeHistoryCompartment = new Compartment();
+const splitChangeHistoryCompartment = new Compartment();
+let showChangeHistory = true;
+
+class ChangeMarker extends GutterMarker {
+  constructor(kind) {
+    super();
+    this.kind = kind;
+  }
+  eq(other) {
+    return other.kind === this.kind;
+  }
+  toDOM() {
+    const el = document.createElement('div');
+    el.className = 'cm-change-bar cm-change-' + this.kind;
+    return el;
+  }
+}
+const unsavedMarker = new ChangeMarker('unsaved');
+const savedMarker = new ChangeMarker('saved');
+
+function rebuildChangeSet(entries, doc) {
+  const byLine = new Map();
+  for (const [pos, kind] of entries) {
+    const from = doc.lineAt(Math.min(pos, doc.length)).from;
+    if (kind === 'unsaved' || !byLine.has(from)) byLine.set(from, kind);
+  }
+  return RangeSet.of(
+    [...byLine.entries()].sort((a, b) => a[0] - b[0]).map(([from, kind]) => (kind === 'unsaved' ? unsavedMarker : savedMarker).range(from))
+  );
+}
+
+const changeHistoryField = StateField.define({
+  create() {
+    return RangeSet.empty;
+  },
+  update(set, tr) {
+    for (const e of tr.effects) {
+      if (e.is(clearHistoryEffect)) return RangeSet.empty;
+    }
+    if (tr.docChanged) {
+      set = set.map(tr.changes);
+      const entries = [];
+      const iter = set.iter();
+      while (iter.value) {
+        entries.push([iter.from, iter.value.kind]);
+        iter.next();
+      }
+      const doc = tr.state.doc;
+      tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+        const first = doc.lineAt(fromB).number;
+        const last = doc.lineAt(Math.min(toB, doc.length)).number;
+        for (let n = first; n <= last; n++) entries.push([doc.line(n).from, 'unsaved']);
+      });
+      set = rebuildChangeSet(entries, doc);
+    }
+    for (const e of tr.effects) {
+      if (e.is(markSavedEffect)) {
+        const entries = [];
+        const iter = set.iter();
+        while (iter.value) {
+          entries.push([iter.from, 'saved']);
+          iter.next();
+        }
+        set = rebuildChangeSet(entries, tr.state.doc);
+      }
+    }
+    return set;
+  },
+});
+
+const changeHistoryGutter = gutter({
+  class: 'cm-change-gutter',
+  markers: v => v.state.field(changeHistoryField),
+  initialSpacer: () => unsavedMarker,
+});
+
+function changeHistoryExtensions(compartment) {
+  return [changeHistoryField, compartment.of(showChangeHistory ? changeHistoryGutter : [])];
+}
+
+function toggleChangeHistory() {
+  showChangeHistory = !showChangeHistory;
+  editorView.dispatch({ effects: changeHistoryCompartment.reconfigure(showChangeHistory ? changeHistoryGutter : []) });
+  for (const p of openPanes()) {
+    p.view.dispatch({ effects: splitChangeHistoryCompartment.reconfigure(showChangeHistory ? changeHistoryGutter : []) });
+  }
+}
+
+function markTabHistorySaved(tab) {
+  const effect = markSavedEffect.of(null);
+  if (tab.id === activeTabId) {
+    editorView.dispatch({ effects: effect });
+  } else if (tab.state) {
+    tab.state = tab.state.update({ effects: effect }).state;
+  }
+  for (const p of openPanes()) {
+    if ((p.mode === 'tab' && p.tabId === tab.id) || (p.mode === 'clone' && tab.id === activeTabId)) p.view.dispatch({ effects: effect });
+  }
+}
+
+function changedLines(state) {
+  const lines = [];
+  const iter = state.field(changeHistoryField).iter();
+  while (iter.value) {
+    lines.push(state.doc.lineAt(iter.from).number);
+    iter.next();
+  }
+  return lines;
+}
+
+function gotoChange(view, direction) {
+  const lines = changedLines(view.state);
+  if (!lines.length) return;
+  const current = view.state.doc.lineAt(view.state.selection.main.head).number;
+  let target;
+  if (direction > 0) target = lines.find(n => n > current) ?? lines[0];
+  else target = [...lines].reverse().find(n => n < current) ?? lines[lines.length - 1];
+  const line = view.state.doc.line(target);
+  view.dispatch({ selection: { anchor: line.from }, effects: EditorView.scrollIntoView(line.from, { y: 'center' }) });
+  view.focus();
+}
+
+function changeHistoryCommand(action) {
+  const view = activeView();
+  if (!view) return;
+  if (action === 'next') gotoChange(view, 1);
+  else if (action === 'prev') gotoChange(view, -1);
+  else if (action === 'clear') view.dispatch({ effects: clearHistoryEffect.of(null) });
+  else if (action === 'toggle') toggleChangeHistory();
+}
+
+// Column editor
+function columnEditorTargets(view) {
+  const state = view.state;
+  const doc = state.doc;
+  const ranges = state.selection.ranges;
+  if (ranges.length > 1) {
+    return [...ranges]
+      .sort((a, b) => a.from - b.from)
+      .map(r => ({ from: r.from, to: r.to, pad: 0 }));
+  }
+  const main = state.selection.main;
+  const startLine = doc.lineAt(main.from);
+  const col = main.from - startLine.from;
+  const endLineNo = main.empty ? doc.lines : doc.lineAt(main.to).number;
+  const targets = [];
+  for (let n = startLine.number; n <= endLineNo; n++) {
+    const line = doc.line(n);
+    if (line.length >= col) targets.push({ from: line.from + col, to: line.from + col, pad: 0 });
+    else targets.push({ from: line.to, to: line.to, pad: col - line.length });
+  }
+  return targets;
+}
+
+function columnEditorValues(count, opts) {
+  if (opts.mode === 'text') return Array(count).fill(opts.text || '');
+  const radix = { dec: 10, hex: 16, oct: 8, bin: 2 }[opts.format] || 10;
+  const repeat = Math.max(1, opts.repeat || 1);
+  const raw = [];
+  for (let i = 0; i < count; i++) raw.push(opts.initial + opts.step * Math.floor(i / repeat));
+  const strs = raw.map(v => (v < 0 ? '-' : '') + Math.abs(Math.trunc(v)).toString(radix).toUpperCase());
+  if (!opts.leadingZeros) return strs;
+  const width = Math.max(...strs.map(s => s.replace('-', '').length));
+  return strs.map(s => (s.startsWith('-') ? '-' + s.slice(1).padStart(width, '0') : s.padStart(width, '0')));
+}
+
+function applyColumnEditor(opts) {
+  const view = editableView();
+  if (!view) return;
+  const targets = columnEditorTargets(view);
+  if (!targets.length) return;
+  const values = columnEditorValues(targets.length, opts);
+  const changes = targets.map((t, i) => ({ from: t.from, to: t.to, insert: ' '.repeat(t.pad) + values[i] }));
+  view.dispatch({ changes });
+  view.focus();
+}
+
+function showColumnEditor() {
+  const dialog = document.getElementById('column-dialog');
+  dialog.classList.remove('hidden');
+  updateColumnEditorMode();
+  const mode = document.querySelector('input[name="col-mode"]:checked').value;
+  document.getElementById(mode === 'text' ? 'col-text' : 'col-initial').focus();
+}
+
+function hideColumnEditor() {
+  document.getElementById('column-dialog').classList.add('hidden');
+  activeView().focus();
+}
+
+function updateColumnEditorMode() {
+  const mode = document.querySelector('input[name="col-mode"]:checked').value;
+  document.getElementById('col-text-fields').classList.toggle('disabled', mode !== 'text');
+  document.getElementById('col-number-fields').classList.toggle('disabled', mode !== 'number');
+}
+
+function executeColumnEditor() {
+  const mode = document.querySelector('input[name="col-mode"]:checked').value;
+  const opts = {
+    mode,
+    text: document.getElementById('col-text').value,
+    initial: parseInt(document.getElementById('col-initial').value, 10) || 0,
+    step: parseInt(document.getElementById('col-step').value, 10) || 0,
+    repeat: parseInt(document.getElementById('col-repeat').value, 10) || 1,
+    leadingZeros: document.getElementById('col-zeros').checked,
+    format: document.querySelector('input[name="col-format"]:checked').value,
+  };
+  hideColumnEditor();
+  applyColumnEditor(opts);
+}
+
+function initColumnEditor() {
+  document.querySelectorAll('input[name="col-mode"]').forEach(el => el.addEventListener('change', updateColumnEditorMode));
+  document.getElementById('col-ok').addEventListener('click', executeColumnEditor);
+  document.getElementById('col-cancel').addEventListener('click', hideColumnEditor);
+  document.getElementById('column-dialog').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'checkbox' && e.target.type !== 'radio') executeColumnEditor();
+    if (e.key === 'Escape') hideColumnEditor();
+  });
+  document.getElementById('column-dialog').addEventListener('click', (e) => {
+    if (e.target.classList.contains('dialog-overlay')) hideColumnEditor();
+  });
+}
+
+// Closer detector
+const CLOSER_PAIRS = { '(': ')', '[': ']', '{': '}' };
+const CLOSER_OPENERS = { ')': '(', ']': '[', '}': '{' };
+const C_LIKE = new Set(['javascript', 'jsx', 'typescript', 'tsx', 'java', 'c', 'cpp', 'php', 'rust', 'go', 'swift', 'kotlin', 'csharp', 'scala', 'dart', 'objectivec', 'd', 'groovy', 'json']);
+const HASH_COMMENT = new Set(['python', 'shell', 'ruby', 'perl', 'yaml', 'toml', 'ini', 'powershell', 'r', 'julia', 'cmake', 'dockerfile', 'nginx', 'crystal', 'elm', 'coffeescript', 'tcl']);
+const DASH_COMMENT = new Set(['sql', 'lua', 'haskell', 'vhdl']);
+const MARKUP = new Set(['html', 'xml', 'markdown']);
+const PROSE = new Set(['plain', 'markdown', 'latex']);
+const BACKTICK_LANGS = new Set(['javascript', 'jsx', 'typescript', 'tsx', 'shell', 'go', 'markdown']);
+
+let closerMarks = [];
+let closerIssues = [];
+
+function closerScan(text, langKey, checkQuotes) {
+  const issues = [];
+  const marks = [];
+  const lineStarts = [0];
+  for (let i = 0; i < text.length; i++) if (text[i] === '\n') lineStarts.push(i + 1);
+  const lineOf = (pos) => {
+    let lo = 0, hi = lineStarts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (lineStarts[mid] <= pos) lo = mid; else hi = mid - 1;
+    }
+    return lo + 1;
+  };
+  const lineText = (n) => text.slice(lineStarts[n - 1], n < lineStarts.length ? lineStarts[n] - 1 : text.length);
+  const indentOf = (s) => (/^\s*/.exec(s)[0]).length;
+
+  const prose = PROSE.has(langKey);
+  const cLike = C_LIKE.has(langKey) || langKey === 'css';
+  const hash = HASH_COMMENT.has(langKey);
+  const dash = DASH_COMMENT.has(langKey);
+  const markup = MARKUP.has(langKey);
+  const singleQuotes = checkQuotes && !prose && !markup;
+  const doubleQuotes = checkQuotes && !prose;
+  const backticks = checkQuotes && BACKTICK_LANGS.has(langKey);
+  const triple = langKey === 'python';
+
+  const stack = [];
+  let i = 0;
+  const n = text.length;
+
+  const suggestBlockClosePos = (openPos) => {
+    const openLine = lineOf(openPos);
+    const baseIndent = indentOf(lineText(openLine));
+    for (let ln = openLine + 1; ln < lineStarts.length; ln++) {
+      const s = lineText(ln);
+      if (!s.trim()) continue;
+      if (indentOf(s) <= baseIndent) {
+        let prev = ln - 1;
+        while (prev > openLine && !lineText(prev).trim()) prev--;
+        return lineStarts[prev - 1] + lineText(prev).length;
+      }
+    }
+    const last = lineStarts.length;
+    return lineStarts[last - 1] + lineText(last).length;
+  };
+
+  const suggestInlineClosePos = (openPos) => {
+    const ln = lineOf(openPos);
+    const s = lineText(ln);
+    let t = s.replace(/\s+$/, '');
+    if (/[;,{]$/.test(t)) t = t.slice(0, -1).replace(/\s+$/, '');
+    const pos = lineStarts[ln - 1] + t.length;
+    return Math.max(openPos + 1, pos);
+  };
+
+  const suggestClosePos = (open, limit) => {
+    let pos = open.char === '{' ? suggestBlockClosePos(open.pos) : suggestInlineClosePos(open.pos);
+    if (limit != null) {
+      if (lineOf(open.pos) === lineOf(limit) || pos > limit) pos = limit;
+    }
+    return pos;
+  };
+
+  while (i < n) {
+    const ch = text[i];
+    const next = text[i + 1];
+
+    if (cLike && ch === '/' && next === '/') { while (i < n && text[i] !== '\n') i++; continue; }
+    if (cLike && ch === '/' && next === '*') { const end = text.indexOf('*/', i + 2); i = end < 0 ? n : end + 2; continue; }
+    if (hash && ch === '#') { while (i < n && text[i] !== '\n') i++; continue; }
+    if (dash && ch === '-' && next === '-') { while (i < n && text[i] !== '\n') i++; continue; }
+    if (markup && text.startsWith('<!--', i)) { const end = text.indexOf('-->', i + 4); i = end < 0 ? n : end + 3; continue; }
+
+    if (triple && (text.startsWith('"""', i) || text.startsWith("'''", i))) {
+      const q = text.slice(i, i + 3);
+      const end = text.indexOf(q, i + 3);
+      if (end < 0) {
+        issues.push({ kind: 'quote', char: q, pos: i, line: lineOf(i), message: `Unclosed ${q} string opened on line ${lineOf(i)}` });
+        marks.push({ from: i, to: i + 3, cls: 'cm-closer-open' });
+        i = n;
+      } else i = end + 3;
+      continue;
+    }
+
+    if ((ch === '"' && doubleQuotes) || (ch === "'" && singleQuotes) || (ch === '`' && backticks)) {
+      const multi = ch === '`';
+      let j = i + 1;
+      let closed = false;
+      while (j < n) {
+        if (text[j] === '\\') { j += 2; continue; }
+        if (text[j] === ch) { closed = true; break; }
+        if (text[j] === '\n' && !multi) break;
+        j++;
+      }
+      if (!closed) {
+        if (prose && ch === '"') {
+          i++;
+          continue;
+        }
+        issues.push({ kind: 'quote', char: ch, pos: i, line: lineOf(i), message: `Unclosed ${ch} quote on line ${lineOf(i)}` });
+        marks.push({ from: i, to: i + 1, cls: 'cm-closer-open' });
+        i = multi ? n : j;
+        continue;
+      }
+      i = j + 1;
+      continue;
+    }
+
+    if (CLOSER_PAIRS[ch]) {
+      stack.push({ char: ch, pos: i });
+    } else if (CLOSER_OPENERS[ch]) {
+      const want = CLOSER_OPENERS[ch];
+      if (stack.length && stack[stack.length - 1].char === want) {
+        stack.pop();
+      } else {
+        const idx = stack.map(s => s.char).lastIndexOf(want);
+        if (idx < 0) {
+          issues.push({ kind: 'extra', char: ch, pos: i, line: lineOf(i), message: `Extra ${ch} on line ${lineOf(i)} with no matching ${want}` });
+          marks.push({ from: i, to: i + 1, cls: 'cm-closer-extra' });
+        } else {
+          for (let k = stack.length - 1; k > idx; k--) {
+            const open = stack[k];
+            const closer = CLOSER_PAIRS[open.char];
+            const insertAt = suggestClosePos(open, i);
+            issues.push({ kind: 'missing', char: closer, pos: open.pos, line: lineOf(open.pos), insertAt, message: `Missing ${closer} for ${open.char} opened on line ${lineOf(open.pos)}; probably belongs on line ${lineOf(insertAt)} (must come before ${ch} on line ${lineOf(i)})` });
+            marks.push({ from: open.pos, to: open.pos + 1, cls: 'cm-closer-open' });
+            marks.push({ from: insertAt, to: insertAt, widget: closer });
+          }
+          stack.length = idx;
+        }
+      }
+    }
+    i++;
+  }
+
+  if (prose) {
+    const paragraphs = text.split(/\n\s*\n/);
+    let offset = 0;
+    for (const para of paragraphs) {
+      const count = (para.match(/"/g) || []).length;
+      if (count % 2 === 1) {
+        const last = offset + para.lastIndexOf('"');
+        issues.push({ kind: 'quote', char: '"', pos: last, line: lineOf(last), message: `Odd number of double quotes in the paragraph ending on line ${lineOf(last)}` });
+        marks.push({ from: last, to: last + 1, cls: 'cm-closer-open' });
+      }
+      offset += para.length;
+      const sepMatch = /\n\s*\n/.exec(text.slice(offset));
+      offset += sepMatch ? sepMatch[0].length : 0;
+    }
+  }
+
+  for (const open of stack) {
+    const closer = CLOSER_PAIRS[open.char];
+    const insertAt = suggestClosePos(open, null);
+    issues.push({ kind: 'missing', char: closer, pos: open.pos, line: lineOf(open.pos), insertAt, message: `Unclosed ${open.char} opened on line ${lineOf(open.pos)}; ${closer} probably belongs at the end of line ${lineOf(insertAt)}` });
+    marks.push({ from: open.pos, to: open.pos + 1, cls: 'cm-closer-open' });
+    marks.push({ from: insertAt, to: insertAt, widget: closer });
+  }
+
+  issues.sort((a, b) => a.pos - b.pos);
+  return { issues, marks };
+}
+
+class CloserHintWidget extends WidgetType {
+  constructor(ch) {
+    super();
+    this.ch = ch;
+  }
+  eq(other) {
+    return other.ch === this.ch;
+  }
+  toDOM() {
+    const span = document.createElement('span');
+    span.className = 'cm-closer-hint';
+    span.textContent = this.ch;
+    span.title = 'A closing ' + this.ch + ' probably belongs here';
+    return span;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+function buildCloserDecorations(view) {
+  const docLen = view.state.doc.length;
+  const sorted = [...closerMarks].filter(m => m.from <= docLen && m.to <= docLen).sort((a, b) => a.from - b.from || (a.widget ? 1 : 0) - (b.widget ? 1 : 0));
+  const builder = new RangeSetBuilder();
+  for (const m of sorted) {
+    if (m.widget) builder.add(m.from, m.from, Decoration.widget({ widget: new CloserHintWidget(m.widget), side: 1 }));
+    else if (m.to > m.from) builder.add(m.from, m.to, Decoration.mark({ class: m.cls }));
+  }
+  return builder.finish();
+}
+
+const closerPlugin = ViewPlugin.fromClass(class {
+  constructor(view) {
+    this.decorations = buildCloserDecorations(view);
+  }
+  update(update) {
+    if (update.docChanged) {
+      closerMarks = [];
+      this.decorations = Decoration.none;
+      const status = document.getElementById('closer-status');
+      if (closerIssues.length && status && !document.getElementById('closer-panel').classList.contains('hidden')) {
+        status.textContent = 'Document changed, re-check';
+      }
+    } else if (update.viewportChanged || hasRefreshEffect(update)) {
+      this.decorations = buildCloserDecorations(update.view);
+    }
+  }
+}, { decorations: v => v.decorations });
+
+let closerView = null;
+
+function runCloserCheck() {
+  const target = statusTarget();
+  const view = target.view;
+  closerView = view;
+  const checkQuotes = document.getElementById('closer-quotes').checked;
+  const { issues, marks } = closerScan(view.state.doc.toString(), target.language, checkQuotes);
+  closerIssues = issues;
+  closerMarks = marks;
+
+  document.getElementById('grammar-panel').classList.add('hidden');
+  document.getElementById('btn-grammar').classList.remove('active');
+  document.getElementById('closer-panel').classList.remove('hidden');
+  document.getElementById('btn-closers').classList.add('active');
+  document.getElementById('closer-status').textContent = issues.length === 0
+    ? 'All closers balanced'
+    : `${issues.length} issue${issues.length === 1 ? '' : 's'}`;
+
+  view.dispatch({ effects: refreshDecorations.of(null) });
+  renderCloserResults();
+}
+
+function closeCloserPanel() {
+  closerIssues = [];
+  closerMarks = [];
+  document.getElementById('closer-panel').classList.add('hidden');
+  document.getElementById('btn-closers').classList.remove('active');
+  if (closerView) closerView.dispatch({ effects: refreshDecorations.of(null) });
+}
+
+function renderCloserResults() {
+  const container = document.getElementById('closer-results');
+  container.innerHTML = '';
+  if (!closerIssues.length) {
+    container.innerHTML = '<div class="sidebar-placeholder">No missing or extra closers found.</div>';
+    return;
+  }
+  for (const issue of closerIssues) {
+    const item = document.createElement('div');
+    item.className = 'grammar-item';
+    const label = issue.kind === 'missing' ? 'missing' : issue.kind === 'extra' ? 'extra' : 'quote';
+    const cls = issue.kind === 'missing' ? 'error' : issue.kind === 'extra' ? 'typo' : 'style';
+    item.innerHTML = `<span class="grammar-item-type ${cls}">${label.toUpperCase()}</span>`
+      + `<div class="grammar-item-body"><div class="grammar-item-message">${escapeHtml(issue.message)}</div></div>`
+      + (issue.kind === 'missing' ? `<button class="grammar-item-fix">Insert ${escapeHtml(issue.char)}</button>` : '');
+    item.addEventListener('click', (e) => {
+      if (e.target.classList.contains('grammar-item-fix')) return;
+      jumpToPos(closerView, issue.pos);
+    });
+    const fix = item.querySelector('.grammar-item-fix');
+    if (fix) {
+      fix.addEventListener('click', () => {
+        const pos = Math.min(issue.insertAt, closerView.state.doc.length);
+        closerView.dispatch({ changes: { from: pos, to: pos, insert: issue.char }, selection: { anchor: pos + 1 } });
+        closerView.focus();
+        runCloserCheck();
+      });
+    }
+    container.appendChild(item);
+  }
+  listRendered('closer-results');
+}
+
+function jumpToPos(view, pos) {
+  if (!view) return;
+  const p = Math.min(pos, view.state.doc.length);
+  view.dispatch({ selection: { anchor: p, head: Math.min(p + 1, view.state.doc.length) }, effects: EditorView.scrollIntoView(p, { y: 'center' }) });
+  view.focus();
+}
+
+function bookmarkLines(state) {
+  const lines = new Set();
+  const iter = state.field(bookmarkField).iter();
+  while (iter.value) {
+    lines.add(state.doc.lineAt(iter.from).number);
+    iter.next();
+  }
+  return [...lines].sort((a, b) => a - b);
+}
+
+function toggleBookmark(view, pos = view.state.selection.main.head) {
+  const line = view.state.doc.lineAt(pos);
+  const on = !bookmarkLines(view.state).includes(line.number);
+  view.dispatch({ effects: bookmarkEffect.of({ pos: line.from, on }) });
+}
+
+function gotoBookmark(view, direction) {
+  const lines = bookmarkLines(view.state);
+  if (!lines.length) return;
+  const current = view.state.doc.lineAt(view.state.selection.main.head).number;
+  let target;
+  if (direction > 0) target = lines.find(n => n > current) ?? lines[0];
+  else target = [...lines].reverse().find(n => n < current) ?? lines[lines.length - 1];
+  const line = view.state.doc.line(target);
+  view.dispatch({
+    selection: { anchor: line.from },
+    effects: EditorView.scrollIntoView(line.from, { y: 'center' }),
+  });
+  view.focus();
+}
+
+function bookmarkedLineText(view, marked) {
+  const doc = view.state.doc;
+  const set = new Set(bookmarkLines(view.state));
+  const out = [];
+  for (let i = 1; i <= doc.lines; i++) {
+    if (set.has(i) === marked) out.push(doc.line(i).text);
+  }
+  return out;
+}
+
+function removeLines(view, predicate) {
+  const doc = view.state.doc;
+  const set = new Set(bookmarkLines(view.state));
+  const changes = [];
+  for (let i = 1; i <= doc.lines; i++) {
+    if (!predicate(set.has(i))) continue;
+    const line = doc.line(i);
+    const from = line.from;
+    const to = i < doc.lines ? doc.line(i + 1).from : line.to;
+    const adjFrom = i === doc.lines && i > 1 ? doc.line(i - 1).to : from;
+    changes.push({ from: i === doc.lines && i > 1 ? adjFrom : from, to });
+  }
+  if (!changes.length) return;
+  view.dispatch({ changes, effects: clearBookmarksEffect.of(null) });
+}
+
+function bookmarkCommand(action) {
+  const view = activeView();
+  if (!view) return;
+  const editable = editableView();
+  switch (action) {
+    case 'toggle': toggleBookmark(view); break;
+    case 'next': gotoBookmark(view, 1); break;
+    case 'prev': gotoBookmark(view, -1); break;
+    case 'clear': view.dispatch({ effects: clearBookmarksEffect.of(null) }); break;
+    case 'copy': copyToClipboard(bookmarkedLineText(view, true).join('\n')); break;
+    case 'cut':
+      if (!editable) return;
+      copyToClipboard(bookmarkedLineText(view, true).join('\n'));
+      removeLines(view, marked => marked);
+      break;
+    case 'remove':
+      if (!editable) return;
+      removeLines(view, marked => marked);
+      break;
+    case 'remove-unmarked':
+      if (!editable) return;
+      removeLines(view, marked => !marked);
+      break;
+    case 'inverse': {
+      const set = new Set(bookmarkLines(view.state));
+      const effects = [];
+      for (let i = 1; i <= view.state.doc.lines; i++) {
+        effects.push(bookmarkEffect.of({ pos: view.state.doc.line(i).from, on: !set.has(i) }));
+      }
+      view.dispatch({ effects });
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+class EolWidget extends WidgetType {
+  constructor(label) {
+    super();
+    this.label = label;
+  }
+  eq(other) {
+    return other.label === this.label;
+  }
+  toDOM() {
+    const span = document.createElement('span');
+    span.className = 'cm-eol-marker';
+    span.textContent = this.label;
+    return span;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+function eolMarkerPlugin(getLabel) {
+  return ViewPlugin.fromClass(class {
+    constructor(view) {
+      this.decorations = this.build(view);
+    }
+    update(update) {
+      if (update.docChanged || update.viewportChanged || hasRefreshEffect(update)) {
+        this.decorations = this.build(update.view);
+      }
+    }
+    build(view) {
+      const builder = new RangeSetBuilder();
+      const label = getLabel();
+      const doc = view.state.doc;
+      for (const { from, to } of view.visibleRanges) {
+        let pos = from;
+        while (pos <= to) {
+          const line = doc.lineAt(pos);
+          if (line.number < doc.lines) {
+            builder.add(line.to, line.to, Decoration.widget({ widget: new EolWidget(label), side: 1 }));
+          }
+          pos = line.to + 1;
+        }
+      }
+      return builder.finish();
+    }
+  }, { decorations: v => v.decorations });
+}
+
+function mainEolLabel() {
+  const tab = getActiveTab();
+  return eolLabel(tab ? tab.eol : DEFAULT_EOL);
+}
+
+
+function whitespaceExt() {
+  return showWhitespace ? highlightWhitespace() : [];
+}
+
+function toggleShowWhitespace() {
+  showWhitespace = !showWhitespace;
+  editorView.dispatch({ effects: whitespaceCompartment.reconfigure(whitespaceExt()) });
+  for (const p of openPanes()) {
+    p.view.dispatch({ effects: splitWhitespaceCompartment.reconfigure(whitespaceExt()) });
+  }
+}
+
+function toggleShowEol() {
+  showEol = !showEol;
+  editorView.dispatch({
+    effects: eolCompartment.reconfigure(showEol ? eolMarkerPlugin(mainEolLabel) : []),
+  });
+  for (const p of openPanes()) {
+    p.view.dispatch({
+      effects: splitEolCompartment.reconfigure(showEol ? eolMarkerPlugin(() => paneEolLabel(p)) : []),
+    });
+  }
+}
+
+function refreshEolMarkers() {
+  if (!showEol) return;
+  editorView.dispatch({ effects: refreshDecorations.of(null) });
+  for (const p of openPanes()) p.view.dispatch({ effects: refreshDecorations.of(null) });
+}
 
 let tabs = [];
 let activeTabId = null;
@@ -61,16 +1024,70 @@ let tabCounter = 0;
 let editorView = null;
 let fontSize = 14;
 let currentFolderPath = null;
-let autoSaveTimer = null;
 const AUTO_SAVE_DELAY = 2000;
+const refreshDecorations = StateEffect.define();
+
+function hasRefreshEffect(update) {
+  return update.transactions.some(tr => tr.effects.some(e => e.is(refreshDecorations)));
+}
+
+function activeView() {
+  return focusedPane === 'right' && sp.view ? sp.view : editorView;
+}
 let wordWrap = false;
-let leftBgColor = '#282c34';
-let rightBgColor = '#282c34';
-let proseBgColor = '#282c34';
+let currentFontFamily = null;
+let leftBgColor = null;
+let rightBgColor = null;
+let proseBgColor = null;
 let focusedPane = 'left';
-let switchingTabs = false;
 
 const fontCompartment = new Compartment();
+
+function paneTheme(fontFamily) {
+  const spec = {};
+  if (fontFamily) spec['.cm-content, .cm-gutters'] = { fontFamily };
+  return Object.keys(spec).length ? EditorView.theme(spec) : [];
+}
+
+// The chosen background goes on the editor element as inline CSS
+// variables, which the stylesheet's editor and gutter rules read. Inline
+// beats any stylesheet rule, including the editor's own theme sheet.
+function applyPaneBackground(view, color) {
+  if (!view) return;
+  if (color) {
+    view.dom.style.setProperty('--paper', color);
+    view.dom.style.setProperty('--gutter-bg', color);
+  } else {
+    view.dom.style.removeProperty('--paper');
+    view.dom.style.removeProperty('--gutter-bg');
+  }
+}
+
+const DEFAULT_EOL = '\r\n';
+
+function detectEol(raw) {
+  const m = /\r\n|\r|\n/.exec(raw);
+  return m ? m[0] : DEFAULT_EOL;
+}
+
+function normalizeNewlines(raw) {
+  return raw.replace(/\r\n?/g, '\n');
+}
+
+function getCurrentContent() {
+  return proseMode
+    ? document.getElementById('prose-editor').value
+    : editorView.state.doc.toString();
+}
+
+function syncProseToEditor() {
+  const text = document.getElementById('prose-editor').value;
+  if (text !== editorView.state.doc.toString()) {
+    editorView.dispatch({
+      changes: { from: 0, to: editorView.state.doc.length, insert: text },
+    });
+  }
+}
 
 const wikiLinkMark = Decoration.mark({ class: 'cm-wiki-link' });
 const wikiBracketMark = Decoration.mark({ class: 'cm-wiki-bracket' });
@@ -216,33 +1233,67 @@ function getFileName(filePath) {
   return filePath.replace(/\\/g, '/').split('/').pop();
 }
 
-function getLanguageForFile(filePath) {
-  const ext = getFileExtension(filePath);
-  return LANGUAGES[ext] || { name: 'Plain Text', ext: null };
+function getLanguageExtension(filePath, content) {
+  return languageExtensionFor(detectLanguageKey(filePath, content));
 }
 
-function getLanguageExtension(filePath) {
-  const lang = getLanguageForFile(filePath);
-  if (!lang.ext) return [];
-  const ext = typeof lang.ext === 'function' ? lang.ext() : lang.ext();
-  return [ext];
+function tabDisplayName(tab) {
+  if (!tab) return 'Untitled';
+  if (tab.filePath) return getFileName(tab.filePath);
+  return tab.title || 'Untitled';
 }
 
-function createTab(filePath, content) {
+function createTab(filePath, rawContent, opts = {}) {
   const id = ++tabCounter;
+  const content = normalizeNewlines(rawContent || '');
   const tab = {
     id,
     filePath,
-    content: content || '',
-    savedContent: content || '',
+    content,
+    savedContent: content,
     modified: false,
-    scrollPos: null,
-    cursorPos: 0,
+    eol: rawContent ? detectEol(rawContent) : DEFAULT_EOL,
+    savedEol: null,
+    encoding: opts.encoding || 'utf8',
+    savedEncoding: null,
+    language: opts.language || detectLanguageKey(filePath, content),
+    title: opts.title || null,
+    scrollPos: opts.scrollPos || 0,
+    cursorPos: opts.cursorPos || 0,
+    state: null,
   };
+  tab.savedEol = tab.eol;
+  tab.savedEncoding = tab.encoding;
+  tab.state = createTabState(tab);
   tabs.push(tab);
   renderTabs();
   switchToTab(id);
   return tab;
+}
+
+function createTabState(tab) {
+  const pos = Math.min(tab.cursorPos, tab.content.length);
+  return EditorState.create({
+    doc: tab.content,
+    selection: { anchor: pos },
+    extensions: [
+      ...mainExtensions(),
+      languageCompartment.of(languageExtensionFor(tab.language)),
+    ],
+  });
+}
+
+function applyEditorSettings() {
+  editorView.dispatch({
+    effects: [
+      wrapCompartment.reconfigure(wordWrap ? EditorView.lineWrapping : []),
+      fontCompartment.reconfigure(paneTheme(currentFontFamily)),
+      themeCompartment.reconfigure(isDarkTheme ? oneDark : []),
+      whitespaceCompartment.reconfigure(whitespaceExt()),
+      eolCompartment.reconfigure(showEol ? eolMarkerPlugin(mainEolLabel) : []),
+      changeHistoryCompartment.reconfigure(showChangeHistory ? changeHistoryGutter : []),
+    ],
+  });
 }
 
 function getActiveTab() {
@@ -252,11 +1303,7 @@ function getActiveTab() {
 function getSessionState() {
   const currentTab = getActiveTab();
   if (currentTab && editorView) {
-    if (proseMode) {
-      currentTab.content = document.getElementById('prose-editor').value;
-    } else {
-      currentTab.content = editorView.state.doc.toString();
-    }
+    currentTab.content = getCurrentContent();
     currentTab.scrollPos = editorView.scrollDOM.scrollTop;
     currentTab.cursorPos = editorView.state.selection.main.head;
   }
@@ -264,16 +1311,23 @@ function getSessionState() {
   const activeIndex = tabs.findIndex(t => t.id === activeTabId);
   return {
     activeIndex,
+    settings: collectSettings(),
     tabs: tabs.map(t => ({
       filePath: t.filePath,
       content: t.filePath ? null : t.content,
       cursorPos: t.cursorPos || 0,
       scrollPos: t.scrollPos || 0,
+      language: t.language,
+      title: t.title || null,
     })),
   };
 }
 
 async function restoreSession(session) {
+  applySettings(session.settings);
+
+  if (!session.tabs || session.tabs.length === 0) return;
+
   while (tabs.length > 0) {
     tabs.pop();
   }
@@ -281,19 +1335,21 @@ async function restoreSession(session) {
   renderTabs();
 
   for (const saved of session.tabs) {
+    const opts = {
+      cursorPos: saved.cursorPos || 0,
+      scrollPos: saved.scrollPos || 0,
+      language: LANG_BY_KEY[saved.language] ? saved.language : undefined,
+      title: saved.title || null,
+    };
     if (saved.filePath) {
       try {
         const result = await window.electronAPI.readFile({ filePath: saved.filePath });
         if (result.success) {
-          const tab = createTab(saved.filePath, result.content);
-          tab.cursorPos = saved.cursorPos || 0;
-          tab.scrollPos = saved.scrollPos || 0;
+          createTab(saved.filePath, result.content, { ...opts, encoding: result.encoding });
         }
       } catch (e) {}
     } else if (saved.content) {
-      const tab = createTab(null, saved.content);
-      tab.cursorPos = saved.cursorPos || 0;
-      tab.scrollPos = saved.scrollPos || 0;
+      createTab(null, saved.content, opts);
     }
   }
 
@@ -308,11 +1364,9 @@ async function restoreSession(session) {
 function switchToTab(id) {
   const currentTab = getActiveTab();
   if (currentTab && editorView) {
-    if (proseMode) {
-      currentTab.content = document.getElementById('prose-editor').value;
-    } else {
-      currentTab.content = editorView.state.doc.toString();
-    }
+    if (proseMode) syncProseToEditor();
+    currentTab.state = editorView.state;
+    currentTab.content = editorView.state.doc.toString();
     currentTab.scrollPos = editorView.scrollDOM.scrollTop;
     currentTab.cursorPos = editorView.state.selection.main.head;
   }
@@ -321,46 +1375,49 @@ function switchToTab(id) {
   const tab = getActiveTab();
   if (!tab) return;
 
-  switchingTabs = true;
-
-  const langExt = getLanguageExtension(tab.filePath);
-  editorView.dispatch({
-    changes: { from: 0, to: editorView.state.doc.length, insert: tab.content },
-  });
-
-  editorView.dispatch({
-    effects: languageCompartment.reconfigure(langExt),
-  });
+  editorView.setState(tab.state);
+  applyEditorSettings();
+  editorView.scrollDOM.scrollTop = tab.scrollPos || 0;
 
   if (proseMode) {
     document.getElementById('prose-editor').value = tab.content;
+    document.getElementById('prose-editor').focus();
+  } else {
+    editorView.focus();
   }
 
-  if (tab.scrollPos !== null) {
-    editorView.scrollDOM.scrollTop = tab.scrollPos;
-  }
-
-  try {
-    const pos = Math.min(tab.cursorPos, editorView.state.doc.length);
-    editorView.dispatch({
-      selection: { anchor: pos },
-    });
-  } catch (e) {
-    // ignore position errors
-  }
-
-  switchingTabs = false;
-
-  editorView.focus();
+  refreshSplitClone();
+  if (minimapVisible) requestAnimationFrame(renderMinimap);
   updateStatusBar();
   renderTabs();
+  scheduleFunctionListRefresh();
+  if (linkMapOpen && linkGraph) renderLinkMap();
 }
 
-function closeTab(id) {
+async function confirmDiscard(message) {
+  if (!window.electronAPI || !window.electronAPI.confirmClose) return 1;
+  return window.electronAPI.confirmClose({ message });
+}
+
+async function closeTab(id) {
+  const tab = tabs.find(t => t.id === id);
+  if (!tab) return;
+
+  if (tab.modified) {
+    const choice = await confirmDiscard(`Save changes to ${tabDisplayName(tab)}?`);
+    if (choice === 2) return;
+    if (choice === 0) {
+      const ok = await saveTab(tab);
+      if (!ok) return;
+    }
+  }
+
   const idx = tabs.findIndex(t => t.id === id);
   if (idx < 0) return;
 
+  if (tab.autoSaveTimer) clearTimeout(tab.autoSaveTimer);
   tabs.splice(idx, 1);
+  for (const p of panesShowingTab(id)) vacatePane(p);
 
   if (tabs.length === 0) {
     createTab(null, '');
@@ -386,7 +1443,7 @@ function renderTabs() {
 
     const name = document.createElement('span');
     name.className = 'tab-name';
-    name.textContent = getFileName(tab.filePath);
+    name.textContent = tabDisplayName(tab);
 
     const modified = document.createElement('span');
     modified.className = 'tab-modified';
@@ -403,40 +1460,764 @@ function renderTabs() {
     el.appendChild(modified);
     el.appendChild(close);
 
-    el.addEventListener('click', () => switchToTab(tab.id));
+    el.addEventListener('click', () => {
+      if (focusedPane === 'right' && splitView && sp.mode !== 'compare') {
+        loadTabIntoSplitPane(tab);
+      } else {
+        switchToTab(tab.id);
+      }
+    });
+    el.addEventListener('auxclick', (e) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        closeTab(tab.id);
+      }
+    });
+    el.addEventListener('contextmenu', (e) => showTabContextMenu(e, tab));
+
+    el.draggable = true;
+    el.addEventListener('dragstart', (e) => {
+      draggingTabId = tab.id;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/x-notepadplus-tab', String(tab.id));
+      el.classList.add('dragging');
+    });
+    el.addEventListener('dragend', () => {
+      draggingTabId = null;
+      el.classList.remove('dragging');
+      container.querySelectorAll('.tab').forEach(t => t.classList.remove('drop-before', 'drop-after'));
+    });
+    el.addEventListener('dragover', (e) => {
+      if (draggingTabId === null || draggingTabId === tab.id) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'move';
+      const rect = el.getBoundingClientRect();
+      const after = e.clientX > rect.left + rect.width / 2;
+      el.classList.toggle('drop-after', after);
+      el.classList.toggle('drop-before', !after);
+    });
+    el.addEventListener('dragleave', () => {
+      el.classList.remove('drop-before', 'drop-after');
+    });
+    el.addEventListener('drop', (e) => {
+      if (draggingTabId === null || draggingTabId === tab.id) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = el.getBoundingClientRect();
+      const after = e.clientX > rect.left + rect.width / 2;
+      const from = tabs.findIndex(t => t.id === draggingTabId);
+      let to = tabs.findIndex(t => t.id === tab.id);
+      if (from < 0 || to < 0) return;
+      if (after) to += 1;
+      if (from < to) to -= 1;
+      moveTab(from, to);
+      draggingTabId = null;
+    });
+
     container.appendChild(el);
   }
+}
+
+let draggingTabId = null;
+
+function moveTab(from, to) {
+  if (to < 0 || to >= tabs.length || from === to) return;
+  const [tab] = tabs.splice(from, 1);
+  tabs.splice(to, 0, tab);
+  renderTabs();
+}
+
+function tabCommand(action) {
+  const idx = tabs.findIndex(t => t.id === activeTabId);
+  if (idx < 0) return;
+  const n = tabs.length;
+  switch (action) {
+    case 'next': switchToTab(tabs[(idx + 1) % n].id); break;
+    case 'prev': switchToTab(tabs[(idx - 1 + n) % n].id); break;
+    case 'first': switchToTab(tabs[0].id); break;
+    case 'last': switchToTab(tabs[n - 1].id); break;
+    case 'move-forward': moveTab(idx, idx + 1); break;
+    case 'move-backward': moveTab(idx, idx - 1); break;
+    default:
+      if (action.startsWith('goto:')) {
+        const k = parseInt(action.slice(5), 10);
+        if (tabs[k - 1]) switchToTab(tabs[k - 1].id);
+      }
+  }
+}
+
+function hideTabContextMenu() {
+  const existing = document.getElementById('tab-context-menu');
+  if (existing) existing.remove();
+}
+
+function showPopupMenu(x, y, items) {
+  hideTabContextMenu();
+
+  const menu = document.createElement('div');
+  menu.id = 'tab-context-menu';
+  for (const item of items) {
+    if (!item) {
+      const sep = document.createElement('div');
+      sep.className = 'ctx-sep';
+      menu.appendChild(sep);
+      continue;
+    }
+    const [label, action, disabled, checked] = item;
+    const el = document.createElement('div');
+    el.className = 'ctx-item' + (disabled ? ' disabled' : '') + (checked ? ' checked' : '');
+    el.textContent = label;
+    if (!disabled) {
+      el.addEventListener('click', () => {
+        hideTabContextMenu();
+        action();
+      });
+    }
+    menu.appendChild(el);
+  }
+
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  document.body.appendChild(menu);
+
+  const rect = menu.getBoundingClientRect();
+  if (rect.right > window.innerWidth) menu.style.left = Math.max(0, window.innerWidth - rect.width - 4) + 'px';
+  if (rect.bottom > window.innerHeight) menu.style.top = Math.max(0, window.innerHeight - rect.height - 4) + 'px';
+
+  // Keyboard operation: arrows, Home/End, type-ahead, Enter, Escape.
+  const entries = Array.from(menu.querySelectorAll('.ctx-item:not(.disabled)'));
+  let active = Math.max(0, entries.findIndex(el => el.classList.contains('checked')));
+  const setActive = (i) => {
+    if (!entries.length) return;
+    active = (i + entries.length) % entries.length;
+    entries.forEach((el, k) => el.classList.toggle('active', k === active));
+    entries[active].scrollIntoView({ block: 'nearest' });
+  };
+  let typed = '';
+  let typedTimer = null;
+  const typeAhead = (ch) => {
+    clearTimeout(typedTimer);
+    typed += ch.toLowerCase();
+    typedTimer = setTimeout(() => { typed = ''; }, 800);
+    const start = typed.length === 1 ? active + 1 : active;
+    for (let k = 0; k < entries.length; k++) {
+      const idx = (start + k) % entries.length;
+      if (entries[idx].textContent.toLowerCase().startsWith(typed)) { setActive(idx); return; }
+    }
+  };
+
+  const removeListeners = () => {
+    clearTimeout(typedTimer);
+    document.removeEventListener('mousedown', dismiss, true);
+    document.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('blur', dismiss);
+  };
+  const cleanup = () => {
+    hideTabContextMenu();
+    removeListeners();
+  };
+  const dismiss = (ev) => {
+    if (ev.type === 'mousedown' && menu.contains(ev.target)) return;
+    cleanup();
+  };
+  const onKey = (ev) => {
+    if (ev.key === 'Escape') { ev.preventDefault(); cleanup(); return; }
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); setActive(active + 1); return; }
+    if (ev.key === 'ArrowUp') { ev.preventDefault(); setActive(active - 1); return; }
+    if (ev.key === 'Home') { ev.preventDefault(); setActive(0); return; }
+    if (ev.key === 'End') { ev.preventDefault(); setActive(entries.length - 1); return; }
+    if (ev.key === 'Enter' || ev.key === ' ') {
+      ev.preventDefault();
+      removeListeners();
+      if (entries[active]) entries[active].click(); else hideTabContextMenu();
+      return;
+    }
+    if (ev.key.length === 1 && !ev.ctrlKey && !ev.altKey && !ev.metaKey) { ev.preventDefault(); typeAhead(ev.key); return; }
+    if (ev.key === 'Tab') { ev.preventDefault(); }
+  };
+  // A mouse pick also ends keyboard capture.
+  menu.addEventListener('click', removeListeners, true);
+  document.addEventListener('mousedown', dismiss, true);
+  document.addEventListener('keydown', onKey, true);
+  window.addEventListener('blur', dismiss);
+  setActive(active);
+}
+
+function showStatusMenu(anchorEl, items) {
+  const rect = anchorEl.getBoundingClientRect();
+  showPopupMenu(rect.left, rect.top - 4, items);
+  const menu = document.getElementById('tab-context-menu');
+  if (menu) {
+    const mrect = menu.getBoundingClientRect();
+    menu.style.top = Math.max(0, rect.top - mrect.height - 4) + 'px';
+  }
+}
+
+function showTabContextMenu(e, tab) {
+  e.preventDefault();
+
+  const dir = tab.filePath ? tab.filePath.replace(/\\/g, '/').split('/').slice(0, -1).join('/') : null;
+  showPopupMenu(e.clientX, e.clientY, [
+    ['Close', () => closeTab(tab.id)],
+    ['Close All But This', () => closeTabsWhere(t => t.id !== tab.id)],
+    ['Close All to the Left', () => closeTabsWhere((t, i) => i < tabs.findIndex(x => x.id === tab.id))],
+    ['Close All to the Right', () => closeTabsWhere((t, i) => i > tabs.findIndex(x => x.id === tab.id))],
+    ['Close All', closeAllTabs],
+    null,
+    ['Save', () => saveTab(tab)],
+    ['Save As...', () => saveTabAs(tab)],
+    ['Rename...', () => showRenameDialog(tab)],
+    ['Reload from Disk', () => reloadTab(tab), !tab.filePath],
+    ['Print...', () => printTab(tab)],
+    null,
+    ['Copy Full Path', () => copyToClipboard(tab.filePath), !tab.filePath],
+    ['Copy File Name', () => copyToClipboard(getFileName(tab.filePath)), !tab.filePath],
+    ['Copy Directory Path', () => copyToClipboard(dir), !tab.filePath],
+    ['Open Containing Folder', () => window.electronAPI.showItemInFolder({ filePath: tab.filePath }), !tab.filePath],
+  ]);
+}
+
+function showEncodingMenu(anchorEl) {
+  const current = statusTarget().encoding;
+  showStatusMenu(anchorEl, Object.keys(ENCODING_LABELS).map(enc => [
+    ENCODING_LABELS[enc], () => setEncoding(enc), false, enc === current,
+  ]));
+}
+
+function showEolMenu(anchorEl) {
+  const current = statusTarget().eol;
+  showStatusMenu(anchorEl, [
+    ['Windows (CR LF)', () => setEol('\r\n'), false, current === '\r\n'],
+    ['Unix (LF)', () => setEol('\n'), false, current === '\n'],
+    ['Macintosh (CR)', () => setEol('\r'), false, current === '\r'],
+  ]);
+}
+
+function copyToClipboard(text) {
+  if (!text) return;
+  navigator.clipboard.writeText(text).catch(() => {});
+}
+
+async function closeTabsWhere(predicate) {
+  const targets = tabs.filter((t, i) => predicate(t, i)).map(t => t.id);
+  for (const id of targets) {
+    const before = tabs.length;
+    await closeTab(id);
+    if (tabs.length === before && tabs.some(t => t.id === id)) return;
+  }
+}
+
+function closeAllTabs() {
+  return closeTabsWhere(() => true);
+}
+
+async function saveAllTabs() {
+  for (const tab of tabs.filter(t => t.modified)) {
+    if (!(await saveTab(tab))) return false;
+  }
+  for (const p of openPanes()) {
+    if (p.mode === 'file' && p.modified && !(await saveSplitFile({}, p))) return false;
+  }
+  return true;
+}
+
+async function saveCopyAs() {
+  const target = statusTarget();
+  const content = target.view.state.doc.toString();
+  const result = await window.electronAPI.saveAs({
+    content: content.replace(/\n/g, target.eol),
+    defaultPath: target.filePath || 'untitled.txt',
+  });
+  if (!result.success && !result.canceled) reportSaveError(result.filePath || 'file', result.error);
+}
+
+async function confirmAction(opts) {
+  if (!window.electronAPI || !window.electronAPI.confirmAction) return 0;
+  return window.electronAPI.confirmAction(opts);
+}
+
+async function reloadTab(tab, encoding) {
+  if (!tab || !tab.filePath || !window.electronAPI) return;
+  if (tab.modified) {
+    const choice = await confirmAction({
+      message: `Reload ${getFileName(tab.filePath)} from disk?`,
+      detail: 'Unsaved changes in this document will be lost.',
+      buttons: ['Reload', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+    });
+    if (choice !== 0) return;
+  }
+  const result = await window.electronAPI.readFile({ filePath: tab.filePath, encoding });
+  if (!result.success) {
+    reportSaveError(tab.filePath, result.error);
+    return;
+  }
+  if (tab.autoSaveTimer) clearTimeout(tab.autoSaveTimer);
+  const content = normalizeNewlines(result.content);
+  tab.eol = detectEol(result.content);
+  tab.savedEol = tab.eol;
+  tab.encoding = result.encoding || 'utf8';
+  tab.savedEncoding = tab.encoding;
+  tab.content = content;
+  tab.savedContent = content;
+  tab.modified = false;
+  tab.cursorPos = 0;
+  tab.scrollPos = 0;
+  tab.state = createTabState(tab);
+  if (tab.id === activeTabId) {
+    editorView.setState(tab.state);
+    applyEditorSettings();
+    if (proseMode) document.getElementById('prose-editor').value = content;
+    refreshSplitClone();
+  }
+  for (const p of panesShowingTab(tab.id)) replacePaneDoc(p, content);
+  renderTabs();
+  updateStatusBar();
+  refreshEolMarkers();
+}
+
+async function reloadSplitFile(encoding) {
+  if (!sp.view || !sp.filePath) return;
+  if (sp.modified) {
+    const choice = await confirmAction({
+      message: `Reload ${getFileName(sp.filePath)} from disk?`,
+      detail: 'Unsaved changes in this document will be lost.',
+      buttons: ['Reload', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+    });
+    if (choice !== 0) return;
+  }
+  const result = await window.electronAPI.readFile({ filePath: sp.filePath, encoding });
+  if (!result.success) {
+    reportSaveError(sp.filePath, result.error);
+    return;
+  }
+  const content = normalizeNewlines(result.content);
+  sp.eol = detectEol(result.content);
+  sp.savedEol = sp.eol;
+  sp.encoding = result.encoding || 'utf8';
+  sp.savedEncoding = sp.encoding;
+  sp.savedContent = content;
+  syncingSplit = true;
+  try {
+    sp.view.dispatch({
+      changes: { from: 0, to: sp.view.state.doc.length, insert: content },
+    });
+  } finally {
+    syncingSplit = false;
+  }
+  sp.modified = false;
+  updateStatusBar();
+  refreshEolMarkers();
+}
+
+function reloadCurrent(encoding) {
+  const target = rightPaneTarget();
+  if (target === 'file') return reloadSplitFile(encoding);
+  if (target === 'tab') return reloadTab(tabs.find(t => t.id === sp.tabId), encoding);
+  return reloadTab(getActiveTab(), encoding);
+}
+
+function setEncoding(enc) {
+  if (!ENCODING_LABELS[enc]) return;
+  const target = rightPaneTarget();
+  if (target === 'file') {
+    sp.encoding = enc;
+    sp.modified = computeSplitModified();
+    if (sp.modified) scheduleSplitAutoSave();
+    updateStatusBar();
+    return;
+  }
+  const tab = target === 'tab' ? tabs.find(t => t.id === sp.tabId) : getActiveTab();
+  if (!tab) return;
+  tab.encoding = enc;
+  refreshTabModified(tab);
+}
+
+function currentFilePath() {
+  return statusTarget().filePath || null;
+}
+
+function openContainingFolder() {
+  const p = currentFilePath();
+  if (p && window.electronAPI) window.electronAPI.showItemInFolder({ filePath: p });
+}
+
+function openInDefaultViewer() {
+  const p = currentFilePath();
+  if (p && window.electronAPI) window.electronAPI.openPath({ filePath: p });
+}
+
+async function showSummary() {
+  if (!window.electronAPI || !window.electronAPI.showInfo) return;
+  const target = statusTarget();
+  const text = target.view.state.doc.toString();
+  const lines = [];
+  lines.push(`Full file path: ${target.filePath || '(unsaved)'}`);
+  if (target.filePath) {
+    const st = await window.electronAPI.fileStat({ filePath: target.filePath });
+    if (st.success) {
+      lines.push(`Created: ${new Date(st.birthtimeMs).toLocaleString()}`);
+      lines.push(`Modified: ${new Date(st.mtimeMs).toLocaleString()}`);
+      lines.push(`Size on disk: ${st.size.toLocaleString()} bytes`);
+    }
+  }
+  const eolCount = Math.max(0, target.view.state.doc.lines - 1);
+  const bytes = new TextEncoder().encode(text.replace(/\n/g, target.eol)).length;
+  const words = text.split(/\s+/).filter(Boolean).length;
+  lines.push('');
+  lines.push(`Lines: ${target.view.state.doc.lines.toLocaleString()}`);
+  lines.push(`Characters (without line endings): ${(text.length - eolCount).toLocaleString()}`);
+  lines.push(`Characters (with line endings): ${(text.length - eolCount + eolCount * target.eol.length).toLocaleString()}`);
+  lines.push(`Words: ${words.toLocaleString()}`);
+  lines.push(`Bytes (as saved): ${bytes.toLocaleString()}`);
+  lines.push(`Line endings: ${eolLabel(target.eol)}`);
+  lines.push(`Encoding: ${encodingLabel(target.encoding)}`);
+  await window.electronAPI.showInfo({
+    title: 'File Summary',
+    message: getFileName(target.filePath),
+    detail: lines.join('\n'),
+  });
+}
+
+// Rename
+let renameTarget = null;
+
+function showRenameDialog(tab) {
+  const target = tab ? { kind: 'tab', tab } : (rightPaneTarget() === 'file' ? { kind: 'split' } : { kind: 'tab', tab: getActiveTab() });
+  if (target.kind === 'tab' && !target.tab) return;
+  if (target.kind === 'tab' && rightPaneTarget() === 'tab' && !tab) target.tab = tabs.find(t => t.id === sp.tabId) || target.tab;
+  renameTarget = target;
+  const dialog = document.getElementById('rename-dialog');
+  const input = document.getElementById('rename-input');
+  const current = target.kind === 'split' ? getFileName(sp.filePath) : tabDisplayName(target.tab);
+  input.value = current;
+  dialog.classList.remove('hidden');
+  input.focus();
+  const dot = current.lastIndexOf('.');
+  input.setSelectionRange(0, dot > 0 ? dot : current.length);
+}
+
+function hideRenameDialog() {
+  document.getElementById('rename-dialog').classList.add('hidden');
+  renameTarget = null;
+  activeView().focus();
+}
+
+async function executeRename() {
+  const target = renameTarget;
+  const newName = document.getElementById('rename-input').value.trim();
+  if (!target || !newName || /[\\/]/.test(newName)) {
+    hideRenameDialog();
+    return;
+  }
+
+  if (target.kind === 'tab' && !target.tab.filePath) {
+    target.tab.title = newName;
+    renderTabs();
+    updateStatusBar();
+    hideRenameDialog();
+    return;
+  }
+
+  const oldPath = target.kind === 'split' ? sp.filePath : target.tab.filePath;
+  const sep = oldPath.includes('\\') ? '\\' : '/';
+  const dir = oldPath.slice(0, oldPath.lastIndexOf(sep));
+  const newPath = dir + sep + newName;
+  hideRenameDialog();
+  if (newPath === oldPath) return;
+
+  const result = await window.electronAPI.renameFile({ oldPath, newPath });
+  if (!result.success) {
+    reportSaveError(oldPath, result.error);
+    return;
+  }
+
+  if (target.kind === 'split') {
+    sp.filePath = newPath;
+    sp.language = detectLanguageKey(newPath, sp.view.state.doc.toString());
+    sp.view.dispatch({ effects: splitLanguageCompartment.reconfigure(languageExtensionFor(sp.language)) });
+  } else {
+    target.tab.filePath = newPath;
+    target.tab.language = detectLanguageKey(newPath, tabContent(target.tab));
+    applyTabLanguage(target.tab);
+  }
+  await window.electronAPI.trackRecentFile({ filePath: newPath });
+  renderTabs();
+  updateStatusBar();
+}
+
+function initRenameDialog() {
+  document.getElementById('rename-ok').addEventListener('click', executeRename);
+  document.getElementById('rename-cancel').addEventListener('click', hideRenameDialog);
+  document.getElementById('rename-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') executeRename();
+    if (e.key === 'Escape') hideRenameDialog();
+  });
+  document.getElementById('rename-dialog').addEventListener('click', (e) => {
+    if (e.target.classList.contains('dialog-overlay')) hideRenameDialog();
+  });
+}
+
+// Print
+function printTab(tab) {
+  if (!window.electronAPI || !window.electronAPI.printText) return;
+  const text = tab ? tabContent(tab) : statusTarget().view.state.doc.toString();
+  const title = tab ? tabDisplayName(tab) : (getFileName(statusTarget().filePath) || 'Untitled');
+  window.electronAPI.printText({
+    title,
+    text,
+    fontFamily: currentFontFamily || "'Consolas', 'Courier New', monospace",
+    fontSize: Math.max(6, Math.round(fontSize * 0.75)),
+  });
+}
+
+function printCurrent() {
+  const target = rightPaneTarget();
+  if (target === 'tab') return printTab(tabs.find(t => t.id === sp.tabId));
+  if (target === 'file') return printTab(null);
+  return printTab(getActiveTab());
+}
+
+// Function list
+const FUNCTION_RULES = {
+  javascript: 'js', jsx: 'js', typescript: 'js', tsx: 'js',
+  python: 'python', java: 'java', c: 'cpp', cpp: 'cpp', php: 'php', rust: 'rust', css: 'css', markdown: 'markdown',
+};
+
+function firstNamedChildText(node, doc) {
+  let child = node.firstChild;
+  while (child && !/[A-Za-z]/.test(child.name[0])) child = child.nextSibling;
+  return child ? doc.sliceString(child.from, child.to) : null;
+}
+
+function childText(node, name, doc) {
+  const child = node.getChild(name);
+  return child ? doc.sliceString(child.from, child.to) : null;
+}
+
+function functionEntry(node, family, doc) {
+  const n = node.name;
+  switch (family) {
+    case 'js':
+      if (n === 'FunctionDeclaration') return { kind: 'fn', name: childText(node, 'VariableDefinition', doc) };
+      if (n === 'ClassDeclaration') return { kind: 'class', name: childText(node, 'VariableDefinition', doc) };
+      if (n === 'MethodDeclaration') return { kind: 'method', name: childText(node, 'PropertyDefinition', doc) };
+      if (n === 'InterfaceDeclaration') return { kind: 'interface', name: childText(node, 'TypeDefinition', doc) };
+      if (n === 'EnumDeclaration') return { kind: 'enum', name: childText(node, 'TypeDefinition', doc) };
+      if (n === 'TypeAliasDeclaration') return { kind: 'type', name: childText(node, 'TypeDefinition', doc) };
+      if (n === 'VariableDeclaration' && (node.getChild('ArrowFunction') || node.getChild('FunctionExpression'))) {
+        return { kind: 'fn', name: childText(node, 'VariableDefinition', doc) };
+      }
+      return null;
+    case 'python':
+      if (n === 'FunctionDefinition') return { kind: 'fn', name: childText(node, 'VariableName', doc) };
+      if (n === 'ClassDefinition') return { kind: 'class', name: childText(node, 'VariableName', doc) };
+      return null;
+    case 'java':
+      if (n === 'MethodDeclaration' || n === 'ConstructorDeclaration') return { kind: 'method', name: childText(node, 'Definition', doc) };
+      if (n === 'ClassDeclaration') return { kind: 'class', name: childText(node, 'Definition', doc) };
+      if (n === 'InterfaceDeclaration') return { kind: 'interface', name: childText(node, 'Definition', doc) };
+      if (n === 'EnumDeclaration') return { kind: 'enum', name: childText(node, 'Definition', doc) };
+      return null;
+    case 'cpp':
+      if (n === 'FunctionDefinition') {
+        const decl = node.getChild('FunctionDeclarator');
+        return { kind: 'fn', name: decl ? firstNamedChildText(decl, doc) : null };
+      }
+      if (n === 'ClassSpecifier') return { kind: 'class', name: childText(node, 'TypeIdentifier', doc) };
+      if (n === 'StructSpecifier') return { kind: 'struct', name: childText(node, 'TypeIdentifier', doc) };
+      if (n === 'NamespaceDefinition') return { kind: 'namespace', name: childText(node, 'Identifier', doc) };
+      return null;
+    case 'php':
+      if (n === 'FunctionDefinition') return { kind: 'fn', name: childText(node, 'Name', doc) };
+      if (n === 'MethodDeclaration') return { kind: 'method', name: childText(node, 'Name', doc) };
+      if (n === 'ClassDeclaration') return { kind: 'class', name: childText(node, 'Name', doc) };
+      if (n === 'InterfaceDeclaration') return { kind: 'interface', name: childText(node, 'Name', doc) };
+      if (n === 'TraitDeclaration') return { kind: 'trait', name: childText(node, 'Name', doc) };
+      return null;
+    case 'rust':
+      if (n === 'FunctionItem') return { kind: 'fn', name: childText(node, 'BoundIdentifier', doc) };
+      if (n === 'StructItem') return { kind: 'struct', name: childText(node, 'TypeIdentifier', doc) };
+      if (n === 'EnumItem') return { kind: 'enum', name: childText(node, 'TypeIdentifier', doc) };
+      if (n === 'ImplItem') return { kind: 'impl', name: childText(node, 'TypeIdentifier', doc) };
+      if (n === 'TraitItem') return { kind: 'trait', name: childText(node, 'TypeIdentifier', doc) };
+      return null;
+    case 'css':
+      if (n === 'RuleSet') {
+        const block = node.getChild('Block');
+        const end = block ? block.from : node.to;
+        return { kind: 'rule', name: doc.sliceString(node.from, end).replace(/\s+/g, ' ').trim() };
+      }
+      return null;
+    case 'markdown': {
+      const m = /^(?:ATX|Setext)Heading(\d)$/.exec(n);
+      if (m) {
+        const text = doc.sliceString(node.from, node.to).replace(/^#+\s*|\s*#+\s*$/g, '').replace(/\n[=-]+\s*$/, '').trim();
+        return { kind: 'h' + m[1], name: text };
+      }
+      return null;
+    }
+    default:
+      return null;
+  }
+}
+
+let functionListTimer = null;
+
+function functionListVisible() {
+  const panel = document.getElementById('function-list');
+  return panel && panel.classList.contains('active') && sidebarVisible;
+}
+
+function scheduleFunctionListRefresh() {
+  if (!functionListVisible()) return;
+  if (functionListTimer) clearTimeout(functionListTimer);
+  functionListTimer = setTimeout(refreshFunctionList, 400);
+}
+
+function refreshFunctionList() {
+  const container = document.getElementById('function-list-content');
+  if (!container) return;
+  const target = statusTarget();
+  const view = target.view;
+  const family = FUNCTION_RULES[target.language];
+  container.innerHTML = '';
+
+  if (!view || !family) {
+    container.innerHTML = `<div class="sidebar-placeholder">No function list for ${escapeHtml(languageName(target.language))}</div>`;
+    return;
+  }
+
+  const state = view.state;
+  const doc = state.doc;
+  const tree = ensureSyntaxTree(state, doc.length, 300) || syntaxTree(state);
+  const entries = [];
+  const stack = [];
+  tree.iterate({
+    enter(n) {
+      const entry = functionEntry(n.node, family, doc);
+      if (entry && entry.name) {
+        entries.push({ ...entry, from: n.from, depth: stack.length });
+        stack.push(n.to);
+      } else if (entry) {
+        return undefined;
+      }
+      return undefined;
+    },
+    leave(n) {
+      if (stack.length && stack[stack.length - 1] === n.to) {
+        const entry = functionEntry(n.node, family, doc);
+        if (entry && entry.name) stack.pop();
+      }
+    },
+  });
+
+  if (!entries.length) {
+    container.innerHTML = '<div class="sidebar-placeholder">No functions found</div>';
+    return;
+  }
+
+  for (const entry of entries) {
+    const item = document.createElement('div');
+    item.className = 'fn-item';
+    item.style.paddingLeft = (8 + entry.depth * 14) + 'px';
+    item.innerHTML = `<span class="fn-kind">${escapeHtml(entry.kind)}</span><span class="fn-name">${escapeHtml(entry.name)}</span>`;
+    item.title = `Line ${doc.lineAt(entry.from).number}`;
+    item.addEventListener('click', () => {
+      view.dispatch({
+        selection: { anchor: entry.from },
+        effects: EditorView.scrollIntoView(entry.from, { y: 'start', yMargin: 20 }),
+      });
+      view.focus();
+    });
+    container.appendChild(item);
+  }
+  listRendered('function-list-content');
+}
+
+// F8: main editor, then each open pane in order, then back.
+function focusOtherView() {
+  const open = openPanes();
+  if (!open.length) return;
+  if (focusedPane === 'right') {
+    const idx = open.findIndex(p => p.slot === focusedExtra);
+    const next = open[idx + 1];
+    if (next) next.view.focus();
+    else if (proseMode) document.getElementById('prose-editor').focus();
+    else editorView.focus();
+  } else {
+    open[0].view.focus();
+  }
+}
+
+function setEol(eol) {
+  const target = rightPaneTarget();
+  if (target === 'file') {
+    sp.eol = eol;
+    sp.modified = computeSplitModified();
+    if (sp.modified) scheduleSplitAutoSave();
+    updateStatusBar();
+    refreshEolMarkers();
+    return;
+  }
+  const tab = target === 'tab' ? tabs.find(t => t.id === sp.tabId) : getActiveTab();
+  if (!tab) return;
+  tab.eol = eol;
+  refreshTabModified(tab);
+  refreshEolMarkers();
 }
 
 function updateWindowTitle() {
   if (!window.electronAPI || !window.electronAPI.setTitle) return;
   const tab = getActiveTab();
-  const fileName = tab ? getFileName(tab.filePath) : 'Untitled';
+  const fileName = tabDisplayName(tab);
   const modified = tab && tab.modified ? ' *' : '';
   window.electronAPI.setTitle({ title: `${fileName}${modified} - NotepadPlus` });
+}
+
+function statusTarget() {
+  const tab = getActiveTab();
+  const rightFocused = focusedPane === 'right' && sp.view;
+  if (rightFocused && sp.mode === 'file') {
+    return { filePath: sp.filePath, modified: sp.modified, eol: sp.eol, encoding: sp.encoding, language: sp.language, view: sp.view };
+  }
+  if (rightFocused && sp.mode === 'tab') {
+    const st = tabs.find(t => t.id === sp.tabId) || tab;
+    return { filePath: st.filePath, modified: st.modified, eol: st.eol, encoding: st.encoding, language: st.language, view: sp.view };
+  }
+  if (rightFocused && sp.mode === 'compare') {
+    return { filePath: compareRightPath, modified: false, eol: tab.eol, encoding: 'utf8', language: detectLanguageKey(compareRightPath), view: sp.view };
+  }
+  return { filePath: tab.filePath, modified: tab.modified, eol: tab.eol, encoding: tab.encoding, language: tab.language, view: editorView };
 }
 
 function updateStatusBar() {
   const tab = getActiveTab();
   if (!tab) return;
+  const target = statusTarget();
 
-  document.getElementById('status-file').textContent = tab.filePath || 'Untitled';
-  document.getElementById('status-modified').textContent = tab.modified ? '(Modified)' : '';
+  document.getElementById('status-file').textContent = target.filePath || tabDisplayName(tab);
+  document.getElementById('status-modified').textContent = target.modified ? '(Modified)' : '';
 
-  const lang = getLanguageForFile(tab.filePath);
-  document.getElementById('status-lang').textContent = lang.name;
-  document.getElementById('status-encoding').textContent = 'UTF-8';
+  document.getElementById('status-lang').textContent = languageName(target.language);
+  document.getElementById('status-encoding').textContent = encodingLabel(target.encoding);
+  document.getElementById('status-eol').textContent = eolLabel(target.eol);
 
-  if (editorView) {
-    const pos = editorView.state.selection.main.head;
-    const line = editorView.state.doc.lineAt(pos);
+  const view = target.view;
+  if (view) {
+    const pos = view.state.selection.main.head;
+    const line = view.state.doc.lineAt(pos);
     const col = pos - line.from + 1;
     document.getElementById('status-position').textContent = `Ln ${line.number}, Col ${col}`;
 
-    const doc = editorView.state.doc;
+    const doc = view.state.doc;
     document.getElementById('status-lines').textContent = `${doc.lines} lines`;
 
-    const { from, to } = editorView.state.selection.main;
+    const { from, to } = view.state.selection.main;
     if (from !== to) {
       const selLen = to - from;
       document.getElementById('status-selection').textContent = `(${selLen} selected)`;
@@ -448,131 +2229,242 @@ function updateStatusBar() {
   updateWindowTitle();
 }
 
-function markModified() {
-  if (switchingTabs) return;
-  const tab = getActiveTab();
-  if (!tab) return;
-  const currentContent = editorView.state.doc.toString();
-  tab.content = currentContent;
-  tab.modified = currentContent !== tab.savedContent;
+function refreshTabModified(tab) {
+  tab.modified = tab.content !== tab.savedContent
+    || tab.eol !== tab.savedEol
+    || tab.encoding !== tab.savedEncoding;
   renderTabs();
   updateStatusBar();
   if (tab.modified && tab.filePath) {
-    scheduleAutoSave();
+    scheduleAutoSave(tab);
   }
+}
+
+function markModified() {
+  const tab = getActiveTab();
+  if (!tab) return;
+  tab.content = getCurrentContent();
+  refreshTabModified(tab);
+}
+
+function tabContent(tab) {
+  return tab.id === activeTabId ? getCurrentContent() : tab.content;
+}
+
+function markTabSaved(tab, content) {
+  if (tab.filePath && /\.(md|markdown|txt)$/i.test(tab.filePath)) linkGraph = null;
+  tab.content = content;
+  tab.savedContent = content;
+  tab.savedEol = tab.eol;
+  tab.savedEncoding = tab.encoding;
+  tab.modified = false;
+  markTabHistorySaved(tab);
+  renderTabs();
+  updateStatusBar();
+}
+
+function reportSaveError(filePath, error) {
+  if (window.electronAPI && window.electronAPI.showError) {
+    window.electronAPI.showError({
+      title: 'Save failed',
+      message: `Could not save ${filePath}\n\n${error || 'Unknown error'}`,
+    });
+  }
+}
+
+function applyTabLanguage(tab) {
+  const effect = languageCompartment.reconfigure(languageExtensionFor(tab.language));
+  if (tab.id === activeTabId) {
+    editorView.dispatch({ effects: effect });
+  } else {
+    tab.state = tab.state.update({ effects: effect }).state;
+  }
+  for (const p of panesShowingTab(tab.id)) {
+    p.view.dispatch({ effects: splitLanguageCompartment.reconfigure(languageExtensionFor(tab.language)) });
+  }
+  updateStatusBar();
+  if (functionListVisible()) refreshFunctionList();
+}
+
+function setLanguage(key) {
+  if (!LANG_BY_KEY[key]) return;
+  const target = rightPaneTarget();
+  if (target === 'file') {
+    sp.language = key;
+    sp.view.dispatch({ effects: splitLanguageCompartment.reconfigure(languageExtensionFor(key)) });
+    updateStatusBar();
+    if (functionListVisible()) refreshFunctionList();
+    return;
+  }
+  const tab = target === 'tab' ? tabs.find(t => t.id === sp.tabId) : getActiveTab();
+  if (!tab) return;
+  tab.language = key;
+  applyTabLanguage(tab);
+}
+
+function showLanguageMenu(anchorEl) {
+  const current = statusTarget().language;
+  showStatusMenu(anchorEl, languageMenuList().map(l => [l.name, () => setLanguage(l.key), false, l.key === current]));
+}
+
+async function saveTab(tab, opts = {}) {
+  if (!tab || !window.electronAPI) return false;
+  if (!tab.filePath) return saveTabAs(tab);
+
+  const content = tabContent(tab);
+  const result = await window.electronAPI.saveFile({
+    filePath: tab.filePath,
+    content: content.replace(/\n/g, tab.eol),
+    encoding: tab.encoding,
+  });
+  if (!result.success) {
+    if (!opts.silent) reportSaveError(tab.filePath, result.error);
+    return false;
+  }
+  markTabSaved(tab, content);
+  return true;
+}
+
+async function saveTabAs(tab) {
+  if (!tab || !window.electronAPI) return false;
+
+  const content = tabContent(tab);
+  const result = await window.electronAPI.saveAs({
+    content: content.replace(/\n/g, tab.eol),
+    defaultPath: tab.filePath || 'untitled.txt',
+    encoding: tab.encoding,
+  });
+  if (!result.success) {
+    if (!result.canceled) reportSaveError(result.filePath || 'file', result.error);
+    return false;
+  }
+  tab.filePath = result.filePath;
+  tab.title = null;
+  tab.language = detectLanguageKey(tab.filePath, content);
+  applyTabLanguage(tab);
+  markTabSaved(tab, content);
+  return true;
+}
+
+function rightPaneTarget() {
+  if (focusedPane !== 'right' || !sp.view) return null;
+  return sp.mode === 'file' || sp.mode === 'tab' ? sp.mode : null;
 }
 
 async function saveCurrentFile() {
-  const tab = getActiveTab();
-  if (!tab) return;
-
-  const content = proseMode
-    ? document.getElementById('prose-editor').value
-    : editorView.state.doc.toString();
-
-  if (!tab.filePath) {
-    await saveCurrentFileAs();
-    return;
-  }
-
-  const result = await window.electronAPI.saveFile({ filePath: tab.filePath, content });
-  if (result.success) {
-    tab.savedContent = content;
-    tab.modified = false;
-    renderTabs();
-    updateStatusBar();
-  }
+  const target = rightPaneTarget();
+  if (target === 'file') return saveSplitFile();
+  if (target === 'tab') return saveTab(tabs.find(t => t.id === sp.tabId));
+  return saveTab(getActiveTab());
 }
 
 async function saveCurrentFileAs() {
-  const tab = getActiveTab();
-  if (!tab) return;
+  const target = rightPaneTarget();
+  if (target === 'file') return saveSplitFileAs();
+  if (target === 'tab') return saveTabAs(tabs.find(t => t.id === sp.tabId));
+  return saveTabAs(getActiveTab());
+}
 
-  const content = proseMode
-    ? document.getElementById('prose-editor').value
-    : editorView.state.doc.toString();
-  const result = await window.electronAPI.saveAs({
-    content,
-    defaultPath: tab.filePath || 'untitled.txt',
-  });
-
-  if (result.success) {
-    tab.filePath = result.filePath;
-    tab.savedContent = content;
-    tab.modified = false;
-    renderTabs();
-    updateStatusBar();
-  }
+function applyFontSize() {
+  const px = fontSize + 'px';
+  document.querySelectorAll('.cm-editor').forEach(el => { el.style.fontSize = px; });
+  document.getElementById('prose-editor').style.fontSize = px;
+  if (editorView) editorView.requestMeasure();
+  for (const p of openPanes()) p.view.requestMeasure();
 }
 
 function setFontSize(size) {
   fontSize = Math.max(8, Math.min(40, size));
-  document.querySelector('.cm-editor').style.fontSize = fontSize + 'px';
+  applyFontSize();
+}
+
+function doUndo() {
+  if (proseMode && focusedPane === 'prose') {
+    document.execCommand('undo');
+  } else {
+    undo(activeView());
+  }
+}
+
+function doRedo() {
+  if (proseMode && focusedPane === 'prose') {
+    document.execCommand('redo');
+  } else {
+    redo(activeView());
+  }
+}
+
+function mainExtensions() {
+  return [
+    ...bookmarkExtensions(),
+    ...changeHistoryExtensions(changeHistoryCompartment),
+    closerPlugin,
+    lineNumbers(),
+    highlightActiveLineGutter(),
+    highlightSpecialChars(),
+    history(),
+    foldGutter(),
+    drawSelection(),
+    dropCursor(),
+    EditorState.allowMultipleSelections.of(true),
+    indentOnInput(),
+    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    bracketMatching(),
+    closeBrackets(),
+    autocompletion(),
+    rectangularSelection(),
+    crosshairCursor(),
+    highlightActiveLine(),
+    highlightSelectionMatches(),
+    wrapCompartment.of(wordWrap ? EditorView.lineWrapping : []),
+    fontCompartment.of(paneTheme(currentFontFamily)),
+    whitespaceCompartment.of(whitespaceExt()),
+    eolCompartment.of(showEol ? eolMarkerPlugin(mainEolLabel) : []),
+    wikiLinkPlugin,
+    grammarPlugin,
+    comparePluginLeft,
+    themeCompartment.of(isDarkTheme ? oneDark : []),
+    autoCapExtension,
+    keymap.of([
+      ...closeBracketsKeymap,
+      ...defaultKeymap,
+      ...searchKeymap,
+      ...historyKeymap,
+      ...foldKeymap,
+      ...completionKeymap,
+      indentWithTab,
+    ]),
+    EditorView.updateListener.of((update) => {
+      if (update.docChanged) {
+        markModified();
+        mirrorFromMain(update);
+        if (minimapVisible) requestAnimationFrame(renderMinimap);
+        scheduleFunctionListRefresh();
+      }
+      if (update.selectionSet || update.docChanged) {
+        updateStatusBar();
+      }
+    }),
+    EditorView.domEventHandlers({
+      drop(e) {
+        if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+          e.preventDefault();
+          return true;
+        }
+        return false;
+      },
+    }),
+  ];
 }
 
 function initEditor() {
   const editorEl = document.getElementById('editor');
 
-  const state = EditorState.create({
-    doc: '',
-    extensions: [
-      lineNumbers(),
-      highlightActiveLineGutter(),
-      highlightSpecialChars(),
-      history(),
-      foldGutter(),
-      drawSelection(),
-      dropCursor(),
-      EditorState.allowMultipleSelections.of(true),
-      indentOnInput(),
-      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-      bracketMatching(),
-      closeBrackets(),
-      autocompletion(),
-      rectangularSelection(),
-      crosshairCursor(),
-      highlightActiveLine(),
-      highlightSelectionMatches(),
-      languageCompartment.of([]),
-      wrapCompartment.of([]),
-      fontCompartment.of([]),
-      wikiLinkPlugin,
-      grammarPlugin,
-      comparePluginLeft,
-      themeCompartment.of(oneDark),
-      autoCapExtension,
-      keymap.of([
-        ...closeBracketsKeymap,
-        ...defaultKeymap,
-        ...searchKeymap,
-        ...historyKeymap,
-        ...foldKeymap,
-        ...completionKeymap,
-        indentWithTab,
-      ]),
-      EditorView.updateListener.of((update) => {
-        if (update.docChanged) {
-          markModified();
-          if (minimapVisible) requestAnimationFrame(renderMinimap);
-        }
-        if (update.selectionSet || update.docChanged) {
-          updateStatusBar();
-        }
-      }),
-      EditorView.domEventHandlers({
-        drop(e) {
-          if (e.dataTransfer && e.dataTransfer.files.length > 0) {
-            e.preventDefault();
-            return true;
-          }
-          return false;
-        },
-      }),
-    ],
-  });
-
   editorView = new EditorView({
-    state,
+    state: EditorState.create({
+      doc: '',
+      extensions: [...mainExtensions(), languageCompartment.of([])],
+    }),
     parent: editorEl,
   });
 
@@ -608,7 +2500,7 @@ async function resolveWikiLink(linkText) {
       if (existing) {
         switchToTab(existing.id);
       } else {
-        createTab(fullPath, result.content);
+        createTab(fullPath, result.content, { encoding: result.encoding });
       }
       return;
     }
@@ -661,33 +2553,28 @@ async function searchSubdirForFile(dirPath, linkText) {
   return null;
 }
 
-function scheduleAutoSave() {
-  if (autoSaveTimer) clearTimeout(autoSaveTimer);
-  autoSaveTimer = setTimeout(async () => {
-    const tab = getActiveTab();
-    if (!tab || !tab.filePath || !tab.modified) return;
-    if (!window.electronAPI) return;
-
-    const content = editorView.state.doc.toString();
-    const result = await window.electronAPI.saveFile({ filePath: tab.filePath, content });
-    if (result.success) {
-      tab.savedContent = content;
-      tab.modified = false;
-      renderTabs();
-      updateStatusBar();
+function scheduleAutoSave(tab = getActiveTab()) {
+  if (!tab) return;
+  if (tab.autoSaveTimer) clearTimeout(tab.autoSaveTimer);
+  tab.autoSaveTimer = setTimeout(async () => {
+    tab.autoSaveTimer = null;
+    if (!tab.filePath || !tab.modified) return;
+    if (await saveTab(tab, { silent: true })) {
       flashAutoSaveIndicator();
+    } else {
+      flashAutoSaveIndicator('Auto-save failed', '#e05a5a');
     }
   }, AUTO_SAVE_DELAY);
 }
 
-function flashAutoSaveIndicator() {
+function flashAutoSaveIndicator(text = 'Saved!', color = '#4ec969') {
   const indicator = document.getElementById('autosave-indicator');
-  indicator.textContent = 'Saved!';
-  indicator.style.color = '#4ec969';
+  indicator.textContent = text;
+  indicator.style.color = color;
   setTimeout(() => {
     indicator.textContent = 'Auto-save: ON';
-    indicator.style.color = '#73c991';
-  }, 1500);
+    indicator.style.color = '';
+  }, 2500);
 }
 
 let proseMode = false;
@@ -716,7 +2603,7 @@ const comparePluginLeft = ViewPlugin.fromClass(class {
     this.decorations = buildCompareDecorations(view, leftCompareRanges);
   }
   update(update) {
-    if (update.docChanged || update.viewportChanged) {
+    if (update.docChanged || update.viewportChanged || hasRefreshEffect(update)) {
       this.decorations = buildCompareDecorations(update.view, leftCompareRanges);
     }
   }
@@ -763,26 +2650,43 @@ const grammarPlugin = ViewPlugin.fromClass(class {
     this.decorations = buildGrammarDecorations(view);
   }
   update(update) {
-    if (update.docChanged || update.viewportChanged) {
+    if (update.docChanged || update.viewportChanged || hasRefreshEffect(update)) {
       this.decorations = buildGrammarDecorations(update.view);
     }
   }
 }, { decorations: v => v.decorations });
 
+function refreshGrammarDecorations() {
+  if (!proseMode && editorView) {
+    editorView.dispatch({ effects: refreshDecorations.of(null) });
+  }
+}
+
+function closeGrammarPanel() {
+  grammarMatches = [];
+  document.getElementById('grammar-panel').classList.add('hidden');
+  document.getElementById('btn-grammar').classList.remove('active');
+  refreshGrammarDecorations();
+}
+
 async function runGrammarCheck() {
+  document.getElementById('closer-panel').classList.add('hidden');
+  document.getElementById('btn-closers').classList.remove('active');
   if (!window.electronAPI || !window.electronAPI.checkGrammar) return;
 
-  const text = proseMode
-    ? document.getElementById('prose-editor').value
-    : editorView.state.doc.toString();
+  const text = getCurrentContent();
+  const statusEl = document.getElementById('grammar-status');
+  document.getElementById('grammar-panel').classList.remove('hidden');
+  document.getElementById('btn-grammar').classList.add('active');
 
   if (!text.trim()) {
     grammarMatches = [];
+    statusEl.textContent = 'Nothing to check';
     showGrammarResults([]);
+    refreshGrammarDecorations();
     return;
   }
 
-  const statusEl = document.getElementById('grammar-status');
   statusEl.textContent = 'Checking...';
 
   const response = await window.electronAPI.checkGrammar({ text });
@@ -797,15 +2701,8 @@ async function runGrammarCheck() {
     ? 'No issues found'
     : `${grammarMatches.length} issue${grammarMatches.length > 1 ? 's' : ''}`;
 
-  if (!proseMode && editorView) {
-    editorView.dispatch({ effects: [] });
-  }
-
+  refreshGrammarDecorations();
   showGrammarResults(grammarMatches);
-
-  const panel = document.getElementById('grammar-panel');
-  panel.classList.remove('hidden');
-  document.getElementById('btn-grammar').classList.add('active');
 }
 
 function showGrammarResults(matches) {
@@ -836,7 +2733,7 @@ function showGrammarResults(matches) {
     item.innerHTML = `
       <span class="grammar-item-type ${typeLabel}">${typeLabel.toUpperCase()}</span>
       <div class="grammar-item-body">
-        <div class="grammar-item-message">${match.message}</div>
+        <div class="grammar-item-message">${escapeHtml(match.message || '')}</div>
         <div class="grammar-item-context">${escapeHtml(before)}<mark>${escapeHtml(marked)}</mark>${escapeHtml(after)}</div>
       </div>
       ${topFix ? `<button class="grammar-item-fix" data-index="${index}">Fix: ${escapeHtml(topFix)}</button>` : ''}
@@ -854,6 +2751,7 @@ function showGrammarResults(matches) {
 
     container.appendChild(item);
   });
+  listRendered('grammar-results');
 }
 
 function escapeHtml(str) {
@@ -901,9 +2799,7 @@ function applyGrammarFix(match, index) {
     }
   }
 
-  if (!proseMode && editorView) {
-    editorView.dispatch({ effects: [] });
-  }
+  refreshGrammarDecorations();
 
   showGrammarResults(grammarMatches);
   document.getElementById('grammar-status').textContent =
@@ -963,12 +2859,38 @@ function proseFindAll(query) {
 function proseFindGoTo(index) {
   if (proseFindMatches.length === 0) return;
   const textarea = document.getElementById('prose-editor');
-  const query = document.getElementById('prose-find-input').value;
+  const input = document.getElementById('prose-find-input');
   const pos = proseFindMatches[index];
   textarea.focus();
-  textarea.setSelectionRange(pos, pos + query.length);
+  textarea.setSelectionRange(pos, pos + input.value.length);
+  input.focus();
   document.getElementById('prose-find-count').textContent =
     `${index + 1} / ${proseFindMatches.length}`;
+}
+
+function initProseFind() {
+  const input = document.getElementById('prose-find-input');
+  input.addEventListener('input', () => proseFindAll(input.value));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (e.shiftKey) proseFindPrev(); else proseFindNext();
+    } else if (e.key === 'Escape') {
+      closeProseFind();
+      document.getElementById('prose-editor').focus();
+    }
+  });
+  document.getElementById('prose-find-next').addEventListener('click', proseFindNext);
+  document.getElementById('prose-find-prev').addEventListener('click', proseFindPrev);
+  document.getElementById('prose-find-close').addEventListener('click', closeProseFind);
+}
+
+function openFind() {
+  if (proseMode && focusedPane !== 'right') {
+    openProseFind();
+  } else {
+    openSearchPanel(activeView());
+  }
 }
 
 function proseFindNext() {
@@ -994,8 +2916,8 @@ function toggleProseMode() {
     proseEl.value = editorView.state.doc.toString();
     editorEl.classList.add('hidden');
     proseEl.classList.remove('hidden');
-    proseEl.style.fontFamily = document.getElementById('font-select').value;
-    proseEl.style.background = proseBgColor;
+    proseEl.style.fontFamily = currentFontFamily || '';
+    proseEl.style.background = proseBgColor || '';
     if (wordWrap) {
       proseEl.style.whiteSpace = 'pre-wrap';
       proseEl.style.overflowWrap = 'break-word';
@@ -1004,10 +2926,7 @@ function toggleProseMode() {
     focusedPane = 'prose';
     btn.classList.add('active');
   } else {
-    const content = proseEl.value;
-    editorView.dispatch({
-      changes: { from: 0, to: editorView.state.doc.length, insert: content },
-    });
+    syncProseToEditor();
     proseEl.classList.add('hidden');
     editorEl.classList.remove('hidden');
     editorView.focus();
@@ -1016,64 +2935,145 @@ function toggleProseMode() {
   }
 }
 
-function setEditorFont(fontFamily) {
+function toggleWordWrap() {
+  wordWrap = !wordWrap;
+  const wrapExt = wordWrap ? EditorView.lineWrapping : [];
   editorView.dispatch({
-    effects: fontCompartment.reconfigure(
-      EditorView.theme({
-        '.cm-content, .cm-gutters': { fontFamily },
-        '&': { backgroundColor: leftBgColor },
-        '.cm-gutters': { backgroundColor: leftBgColor },
-      })
-    ),
+    effects: wrapCompartment.reconfigure(wrapExt),
   });
-  if (splitEditorView) {
-    splitEditorView.dispatch({
-      effects: splitFontCompartment.reconfigure(
-        EditorView.theme({
-          '.cm-content, .cm-gutters': { fontFamily },
-          '&': { backgroundColor: rightBgColor },
-          '.cm-gutters': { backgroundColor: rightBgColor },
-        })
-      ),
-    });
+  for (const p of openPanes()) {
+    p.view.dispatch({ effects: splitWrapCompartment.reconfigure(wrapExt) });
   }
   const proseEl = document.getElementById('prose-editor');
-  proseEl.style.fontFamily = fontFamily;
+  if (wordWrap) {
+    proseEl.style.whiteSpace = 'pre-wrap';
+    proseEl.style.overflowWrap = 'break-word';
+  } else {
+    proseEl.style.whiteSpace = 'pre';
+    proseEl.style.overflowWrap = '';
+  }
+  document.getElementById('btn-wrap').classList.toggle('active', wordWrap);
+}
+
+function collectSettings() {
+  const sidebar = document.getElementById('sidebar');
+  return {
+    fontSize,
+    fontFamily: currentFontFamily,
+    wordWrap,
+    isDarkTheme,
+    leftBgColor,
+    rightBgColor,
+    proseBgColor,
+    sidebarVisible,
+    sidebarWidth: sidebar.style.width || null,
+    minimapVisible,
+    showWhitespace,
+    showEol,
+    showChangeHistory,
+    toolbarHidden: [...toolbarHidden],
+    toolbarExtra: [...toolbarExtra],
+    toolbarCollapsed,
+  };
+}
+
+function applySettings(s) {
+  if (!s) return;
+  if (typeof s.fontSize === 'number') setFontSize(s.fontSize);
+  if (s.fontFamily) {
+    document.getElementById('font-select').value = s.fontFamily;
+    setEditorFont(s.fontFamily);
+  }
+  if (typeof s.wordWrap === 'boolean' && s.wordWrap !== wordWrap) toggleWordWrap();
+  if (typeof s.isDarkTheme === 'boolean' && s.isDarkTheme !== isDarkTheme) toggleTheme();
+  if (s.leftBgColor || s.rightBgColor || s.proseBgColor) {
+    leftBgColor = s.leftBgColor || null;
+    rightBgColor = s.rightBgColor || null;
+    proseBgColor = s.proseBgColor || null;
+    applyPaneThemes();
+    document.getElementById('prose-editor').style.background = proseBgColor || '';
+    if (leftBgColor) document.getElementById('bg-color').value = leftBgColor;
+  }
+  if (s.sidebarVisible === false && sidebarVisible) toggleSidebar();
+  if (s.sidebarWidth) document.getElementById('sidebar').style.width = s.sidebarWidth;
+  if (s.minimapVisible && !minimapVisible) toggleMinimap();
+  if (s.showWhitespace && !showWhitespace) toggleShowWhitespace();
+  if (s.showEol && !showEol) toggleShowEol();
+  if (s.showChangeHistory === false && showChangeHistory) toggleChangeHistory();
+  if (Array.isArray(s.toolbarHidden)) toolbarHidden = new Set(s.toolbarHidden.filter(id => TOOLBAR_BUILTIN.has(id)));
+  if (Array.isArray(s.toolbarExtra)) toolbarExtra = s.toolbarExtra.filter(id => TOOLBAR_ITEMS.some(i => i.id === id && !TOOLBAR_BUILTIN.has(i.id)));
+  if (typeof s.toolbarCollapsed === 'boolean') toolbarCollapsed = s.toolbarCollapsed;
+  applyToolbarConfig();
+}
+
+function applyPaneThemes() {
+  editorView.dispatch({
+    effects: fontCompartment.reconfigure(paneTheme(currentFontFamily)),
+  });
+  applyPaneBackground(editorView, leftBgColor);
+  for (const p of openPanes()) {
+    p.view.dispatch({ effects: splitFontCompartment.reconfigure(paneTheme(currentFontFamily)) });
+    applyPaneBackground(p.view, rightBgColor);
+  }
+}
+
+function setEditorFont(fontFamily) {
+  currentFontFamily = fontFamily;
+  applyPaneThemes();
+  document.getElementById('prose-editor').style.fontFamily = fontFamily;
 }
 
 function setEditorBackground(color) {
-  const fontFamily = document.getElementById('font-select').value;
-
-  if (focusedPane === 'right' && splitEditorView) {
+  if (focusedPane === 'right' && sp.view) {
     rightBgColor = color;
-    splitEditorView.dispatch({
-      effects: splitFontCompartment.reconfigure(
-        EditorView.theme({
-          '.cm-content, .cm-gutters': { fontFamily },
-          '&': { backgroundColor: color },
-          '.cm-gutters': { backgroundColor: color },
-        })
-      ),
-    });
   } else if (focusedPane === 'prose') {
     proseBgColor = color;
     document.getElementById('prose-editor').style.background = color;
   } else {
     leftBgColor = color;
-    editorView.dispatch({
-      effects: fontCompartment.reconfigure(
-        EditorView.theme({
-          '.cm-content, .cm-gutters': { fontFamily },
-          '&': { backgroundColor: color },
-          '.cm-gutters': { backgroundColor: color },
-        })
-      ),
-    });
   }
+  applyPaneThemes();
   document.getElementById('bg-color').value = color;
 }
 
+async function openFileInRightPane(filePath) {
+  const existing = tabs.find(t => t.filePath === filePath);
+  if (existing) return loadTabIntoSplitPane(existing);
+  return loadFileIntoSplitPane(filePath);
+}
+
+function adoptSplitFileAsTab() {
+  const content = sp.view.state.doc.toString();
+  const eol = sp.eol;
+  const savedContent = sp.savedContent;
+  const modified = sp.modified;
+  const filePath = sp.filePath;
+  const savedEol = sp.savedEol;
+  const encoding = sp.encoding;
+  const savedEncoding = sp.savedEncoding;
+  const tab = createTab(filePath, content, { encoding });
+  tab.eol = eol;
+  tab.savedEol = savedEol;
+  tab.savedEncoding = savedEncoding;
+  tab.savedContent = savedContent;
+  tab.modified = modified;
+  renderTabs();
+  updateStatusBar();
+  loadTabIntoSplitPane(tab);
+  editorView.focus();
+  return tab;
+}
+
 async function openFileFromPath(filePath) {
+  if (focusedPane === 'right' && splitView && sp.mode !== 'compare') {
+    return openFileInRightPane(filePath);
+  }
+
+  if (sp.mode === 'file' && sp.filePath === filePath) {
+    adoptSplitFileAsTab();
+    return;
+  }
+
   const existing = tabs.find(t => t.filePath === filePath);
   if (existing) {
     switchToTab(existing.id);
@@ -1084,13 +3084,15 @@ async function openFileFromPath(filePath) {
     const result = await window.electronAPI.readFile({ filePath });
     if (result.success) {
       await window.electronAPI.trackRecentFile({ filePath });
-      createTab(filePath, result.content);
+      createTab(filePath, result.content, { encoding: result.encoding });
     }
   }
 }
 
 async function loadFolderTree(folderPath) {
   currentFolderPath = folderPath;
+  linkGraph = null;
+  if (linkMapOpen) rescanLinkMap();
   const container = document.getElementById('file-tree-content');
   container.innerHTML = '';
 
@@ -1099,7 +3101,7 @@ async function loadFolderTree(folderPath) {
   rootDiv.className = 'tree-item';
   rootDiv.style.paddingLeft = '4px';
   rootDiv.style.fontWeight = '600';
-  rootDiv.innerHTML = `<span class="tree-icon folder">&#9660;</span><span class="tree-label">${rootLabel}</span>`;
+  rootDiv.innerHTML = `<span class="tree-icon folder">&#9660;</span><span class="tree-label">${escapeHtml(rootLabel)}</span>`;
   container.appendChild(rootDiv);
 
   const childrenDiv = document.createElement('div');
@@ -1107,6 +3109,7 @@ async function loadFolderTree(folderPath) {
   container.appendChild(childrenDiv);
 
   await populateTreeLevel(childrenDiv, folderPath, 1);
+  listRendered('file-tree-content');
 
   rootDiv.addEventListener('click', () => {
     const isExpanded = childrenDiv.classList.contains('expanded');
@@ -1127,7 +3130,7 @@ async function populateTreeLevel(parentEl, dirPath, depth) {
     itemDiv.style.paddingLeft = (depth * 16 + 4) + 'px';
 
     if (item.isDirectory) {
-      itemDiv.innerHTML = `<span class="tree-icon folder">&#9654;</span><span class="tree-label">${item.name}</span>`;
+      itemDiv.innerHTML = `<span class="tree-icon folder">&#9654;</span><span class="tree-label">${escapeHtml(item.name)}</span>`;
 
       const childrenDiv = document.createElement('div');
       childrenDiv.className = 'tree-children';
@@ -1146,7 +3149,7 @@ async function populateTreeLevel(parentEl, dirPath, depth) {
       parentEl.appendChild(itemDiv);
       parentEl.appendChild(childrenDiv);
     } else {
-      itemDiv.innerHTML = `<span class="tree-icon file">&#9679;</span><span class="tree-label">${item.name}</span>`;
+      itemDiv.innerHTML = `<span class="tree-icon file">&#9679;</span><span class="tree-label">${escapeHtml(item.name)}</span>`;
       itemDiv.addEventListener('click', () => openFileFromPath(item.path));
       parentEl.appendChild(itemDiv);
     }
@@ -1172,10 +3175,11 @@ async function loadRecentFiles() {
     const name = filePath.replace(/\\/g, '/').split('/').pop();
     const dir = filePath.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
 
-    item.innerHTML = `<span class="recent-name">${name}</span><span class="recent-path">${dir}</span>`;
+    item.innerHTML = `<span class="recent-name">${escapeHtml(name)}</span><span class="recent-path">${escapeHtml(dir)}</span>`;
     item.addEventListener('click', () => openFileFromPath(filePath));
     container.appendChild(item);
   }
+  listRendered('recent-files-content');
 }
 
 function initSidebarTabs() {
@@ -1190,8 +3194,21 @@ function initSidebarTabs() {
       if (btn.dataset.panel === 'recent-files') {
         loadRecentFiles();
       }
+      if (btn.dataset.panel === 'function-list') {
+        refreshFunctionList();
+      }
     });
   });
+}
+
+// Alt+1/2/3: show a sidebar panel and put keyboard focus in its list.
+function showSidebarPanel(panelId) {
+  const btn = document.querySelector(`.sidebar-tab[data-panel="${panelId}"]`);
+  if (!btn) return;
+  if (!sidebarVisible) toggleSidebar();
+  btn.click();
+  const content = document.getElementById(panelId + '-content');
+  if (content) focusKeyboardList(content);
 }
 
 function initSidebarResize() {
@@ -1222,36 +3239,40 @@ function initSidebarResize() {
   });
 }
 
+let gotoView = null;
+
 function showGotoLineDialog() {
   const dialog = document.getElementById('goto-dialog');
   const input = document.getElementById('goto-input');
+  gotoView = activeView();
   dialog.classList.remove('hidden');
   input.value = '';
   input.focus();
 
-  const maxLine = editorView.state.doc.lines;
+  const maxLine = gotoView.state.doc.lines;
   input.max = maxLine;
   input.placeholder = `1 - ${maxLine}`;
 }
 
 function hideGotoLineDialog() {
   document.getElementById('goto-dialog').classList.add('hidden');
-  editorView.focus();
+  (gotoView || editorView).focus();
 }
 
 function executeGotoLine() {
   const input = document.getElementById('goto-input');
   const lineNum = parseInt(input.value, 10);
+  const view = gotoView || editorView;
   if (isNaN(lineNum) || lineNum < 1) {
     hideGotoLineDialog();
     return;
   }
 
-  const doc = editorView.state.doc;
+  const doc = view.state.doc;
   const targetLine = Math.min(lineNum, doc.lines);
   const line = doc.line(targetLine);
 
-  editorView.dispatch({
+  view.dispatch({
     selection: { anchor: line.from },
     effects: EditorView.scrollIntoView(line.from, { y: 'center' }),
   });
@@ -1355,7 +3376,7 @@ function initMinimap() {
     editorView.scrollDOM.scrollTop = ratio * (scrollHeight - clientHeight);
   });
 
-  const observer = new MutationObserver(() => {
+  window.addEventListener('resize', () => {
     if (minimapVisible) requestAnimationFrame(renderMinimap);
   });
 
@@ -1370,9 +3391,18 @@ function initMinimap() {
 }
 
 // Text transformations
+function editableView() {
+  const view = activeView();
+  if (!view) return null;
+  const pane = paneOf(view);
+  if (pane && pane.mode === 'compare') return null;
+  return view;
+}
+
 function transformText(type) {
-  if (!editorView) return;
-  const state = editorView.state;
+  const view = editableView();
+  if (!view) return;
+  const state = view.state;
   const { from, to } = state.selection.main;
   if (from === to) return;
 
@@ -1385,8 +3415,23 @@ function transformText(type) {
     case 'lowercase':
       result = selected.toLowerCase();
       break;
+    case 'propercase':
+      result = selected.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+      break;
     case 'titlecase':
-      result = selected.replace(/\b\w/g, c => c.toUpperCase());
+      result = titleCase(selected);
+      break;
+    case 'sentencecase':
+      result = selected.toLowerCase().replace(/(^\s*\w|[.!?]\s+\w)/g, m => m.toUpperCase());
+      break;
+    case 'invertcase':
+      result = Array.from(selected, c => {
+        const lower = c.toLowerCase();
+        return c === lower ? c.toUpperCase() : lower;
+      }).join('');
+      break;
+    case 'randomcase':
+      result = Array.from(selected, c => (Math.random() < 0.5 ? c.toLowerCase() : c.toUpperCase())).join('');
       break;
     case 'camelcase':
       result = selected
@@ -1396,13 +3441,52 @@ function transformText(type) {
     default:
       return;
   }
-  editorView.dispatch({ changes: { from, to, insert: result } });
+  view.dispatch({ changes: { from, to, insert: result } });
+}
+
+// Title Case: capitalize every word except short joining words, which
+// stay lowercase unless they open or close a line.
+const TITLE_SMALL_WORDS = new Set(['a', 'an', 'the', 'and', 'but', 'or', 'nor', 'for', 'of', 'on', 'in', 'at', 'to', 'by']);
+
+function titleCase(text) {
+  return text.split('\n').map(line => {
+    const words = line.toLowerCase().split(/(\s+)/);
+    const wordIdx = words.map((w, i) => (i % 2 === 0 && w ? i : -1)).filter(i => i >= 0);
+    const first = wordIdx[0];
+    const last = wordIdx[wordIdx.length - 1];
+    return words.map((w, i) => {
+      if (i % 2 === 1 || !w) return w;
+      const bare = w.replace(/[^\p{L}\p{N}']/gu, '');
+      if (TITLE_SMALL_WORDS.has(bare) && i !== first && i !== last) return w;
+      return w.replace(/\p{L}/u, c => c.toUpperCase());
+    }).join('');
+  }).join('\n');
 }
 
 // Line operations
+function leadingNumber(line) {
+  const m = /^\s*[-+]?\d+(\.\d+)?/.exec(line);
+  return m ? parseFloat(m[0]) : null;
+}
+
+function compareNumeric(a, b) {
+  const na = leadingNumber(a);
+  const nb = leadingNumber(b);
+  if (na === null && nb === null) return a.localeCompare(b);
+  if (na === null) return 1;
+  if (nb === null) return -1;
+  return na - nb;
+}
+
 function lineOperation(type) {
-  if (!editorView) return;
-  const state = editorView.state;
+  const view = editableView();
+  if (!view) return;
+
+  if (type === 'duplicate') { copyLineDown(view); return; }
+  if (type === 'move-up') { moveLineUp(view); return; }
+  if (type === 'move-down') { moveLineDown(view); return; }
+
+  const state = view.state;
   const doc = state.doc;
   const { from, to } = state.selection.main;
 
@@ -1412,7 +3496,8 @@ function lineOperation(type) {
     endLine = doc.lines;
   } else {
     startLine = doc.lineAt(from).number;
-    endLine = doc.lineAt(to).number;
+    const endPos = doc.lineAt(to).from === to ? to - 1 : to;
+    endLine = doc.lineAt(endPos).number;
   }
 
   const lines = [];
@@ -1440,25 +3525,310 @@ function lineOperation(type) {
     case 'reverse':
       result = [...lines].reverse();
       break;
+    case 'sort-asc-ci':
+      result = [...lines].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+      break;
+    case 'sort-desc-ci':
+      result = [...lines].sort((a, b) => b.localeCompare(a, undefined, { sensitivity: 'base' }));
+      break;
+    case 'sort-num-asc':
+      result = [...lines].sort(compareNumeric);
+      break;
+    case 'sort-num-desc':
+      result = [...lines].sort((a, b) => compareNumeric(b, a));
+      break;
+    case 'remove-consecutive-dupes':
+      result = lines.filter((l, i) => i === 0 || l !== lines[i - 1]);
+      break;
+    case 'join':
+      result = [lines.map(l => l.trim()).filter(Boolean).join(' ')];
+      break;
+    case 'randomize':
+      result = [...lines];
+      for (let i = result.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [result[i], result[j]] = [result[j], result[i]];
+      }
+      break;
     default:
       return;
   }
 
   const rangeFrom = doc.line(startLine).from;
   const rangeTo = doc.line(endLine).to;
-  editorView.dispatch({ changes: { from: rangeFrom, to: rangeTo, insert: result.join('\n') } });
+  view.dispatch({ changes: { from: rangeFrom, to: rangeTo, insert: result.join('\n') } });
 }
 
 // Split view
+// Extra panes. Pane 0 is the classic right-hand split; panes 1 and 2
+// are the bottom row of the four-pane grid. The main tabbed editor is
+// always the top-left cell. Every extra pane carries the same state the
+// old single split did; `sp` forwards to whichever extra pane has focus
+// (or pane 0 when the main editor has focus) so the two-pane code paths
+// keep working unchanged.
+const PANE_SLOTS = ['editor-split', 'editor-pane-3', 'editor-pane-4'];
 let splitView = false;
-let splitEditorView = null;
-let compareMode = false;
+let gridView = false;
+let panes = [];
+let focusedExtra = 0;
 
-function createSplitEditor(content, langExt, readOnly) {
-  const splitEl = document.getElementById('editor-split');
-  splitEl.innerHTML = '';
+function newPane(slot) {
+  return {
+    slot,
+    el: null,
+    view: null,
+    filePath: null,
+    eol: DEFAULT_EOL,
+    savedEol: DEFAULT_EOL,
+    encoding: 'utf8',
+    savedEncoding: 'utf8',
+    language: 'plain',
+    savedContent: '',
+    modified: false,
+    autoSaveTimer: null,
+    mode: null,
+    tabId: null,
+  };
+}
+
+const DUMMY_PANE = newPane(-1);
+
+function initPanes() {
+  panes = PANE_SLOTS.map((id, i) => {
+    const p = newPane(i);
+    p.el = document.getElementById(id);
+    return p;
+  });
+}
+
+function currentPane() {
+  if (!panes.length) return DUMMY_PANE;
+  return panes[focusedPane === 'right' ? focusedExtra : 0] || panes[0];
+}
+
+const sp = new Proxy({}, {
+  get: (_, k) => currentPane()[k],
+  set: (_, k, v) => { currentPane()[k] = v; return true; },
+});
+
+function openPanes() {
+  return panes.filter(p => p.view);
+}
+
+function paneOf(view) {
+  return panes.find(p => p.view === view) || null;
+}
+
+function computeSplitModified(pane = currentPane()) {
+  if (!pane.view) return false;
+  return pane.view.state.doc.toString() !== pane.savedContent
+    || pane.eol !== pane.savedEol
+    || pane.encoding !== pane.savedEncoding;
+}
+let syncingSplit = false;
+let compareMode = false;
+let compareRightPath = null;
+
+function paneMirrorsActiveTab(p) {
+  return p.mode === 'clone' || (p.mode === 'tab' && p.tabId === activeTabId);
+}
+
+function paneEolLabel(pane) {
+  if (pane.mode === 'file') return eolLabel(pane.eol);
+  if (pane.mode === 'tab') {
+    const tab = tabs.find(t => t.id === pane.tabId);
+    if (tab) return eolLabel(tab.eol);
+  }
+  return mainEolLabel();
+}
+
+// Push one editor's change set into another view without echoing back.
+function mirrorChanges(target, update) {
+  if (!target) return;
+  const wasSyncing = syncingSplit;
+  syncingSplit = true;
+  try {
+    target.dispatch({ changes: update.changes });
+  } catch (e) {
+    target.dispatch({
+      changes: { from: 0, to: target.state.doc.length, insert: update.state.doc.toString() },
+    });
+  } finally {
+    syncingSplit = wasSyncing;
+  }
+}
+
+// Main editor edited: every pane cloning or showing the active tab follows.
+function mirrorFromMain(update) {
+  if (syncingSplit) return;
+  for (const p of openPanes()) {
+    if (paneMirrorsActiveTab(p)) mirrorChanges(p.view, update);
+  }
+}
+
+// A pane edited a tab's document: the main editor (if it shows that tab),
+// the tab's stored state (if it does not), and every other pane on the
+// same tab follow.
+function mirrorFromPane(pane, tab, update) {
+  if (syncingSplit) return;
+  if (tab.id === activeTabId) mirrorChanges(editorView, update);
+  else applyChangesToTab(tab, update);
+  for (const q of openPanes()) {
+    if (q === pane) continue;
+    if ((q.mode === 'tab' && q.tabId === tab.id) || (q.mode === 'clone' && tab.id === activeTabId)) {
+      mirrorChanges(q.view, update);
+    }
+  }
+}
+
+function applyChangesToTab(tab, update) {
+  const wasSyncing = syncingSplit;
+  syncingSplit = true;
+  try {
+    tab.state = tab.state.update({ changes: update.changes }).state;
+  } catch (e) {
+    tab.state = tab.state.update({
+      changes: { from: 0, to: tab.state.doc.length, insert: update.state.doc.toString() },
+    }).state;
+  } finally {
+    syncingSplit = wasSyncing;
+  }
+  tab.content = tab.state.doc.toString();
+  tab.modified = tab.content !== tab.savedContent;
+  renderTabs();
+  if (tab.modified && tab.filePath) scheduleAutoSave(tab);
+}
+
+// Re-seed every clone pane from the main editor (after a tab switch).
+function refreshSplitClone() {
+  const tab = getActiveTab();
+  if (!tab) return;
+  for (const p of openPanes()) {
+    if (p.mode !== 'clone') continue;
+    syncingSplit = true;
+    try {
+      p.view.dispatch({
+        changes: { from: 0, to: p.view.state.doc.length, insert: editorView.state.doc.toString() },
+        effects: splitLanguageCompartment.reconfigure(languageExtensionFor(tab.language)),
+      });
+    } finally {
+      syncingSplit = false;
+    }
+  }
+}
+
+// Panes in tab mode showing this tab receive a whole-document replacement
+// (reload from disk) or a language change.
+function panesShowingTab(tabId) {
+  return openPanes().filter(p => p.mode === 'tab' && p.tabId === tabId);
+}
+
+function replacePaneDoc(pane, content) {
+  syncingSplit = true;
+  try {
+    pane.view.dispatch({ changes: { from: 0, to: pane.view.state.doc.length, insert: content } });
+  } finally {
+    syncingSplit = false;
+  }
+}
+
+function scheduleSplitAutoSave(pane = currentPane()) {
+  if (pane.autoSaveTimer) clearTimeout(pane.autoSaveTimer);
+  pane.autoSaveTimer = setTimeout(async () => {
+    pane.autoSaveTimer = null;
+    if (!pane.view || !pane.filePath || !pane.modified) return;
+    if (await saveSplitFile({ silent: true }, pane)) {
+      flashAutoSaveIndicator();
+    } else {
+      flashAutoSaveIndicator('Auto-save failed', '#e05a5a');
+    }
+  }, AUTO_SAVE_DELAY);
+}
+
+async function saveSplitFile(opts = {}, pane = currentPane()) {
+  if (!pane.view || !pane.filePath || !window.electronAPI) return false;
+  const content = pane.view.state.doc.toString();
+  const result = await window.electronAPI.saveFile({
+    filePath: pane.filePath,
+    content: content.replace(/\n/g, pane.eol),
+    encoding: pane.encoding,
+  });
+  if (!result.success) {
+    if (!opts.silent) reportSaveError(pane.filePath, result.error);
+    return false;
+  }
+  pane.savedContent = content;
+  pane.savedEol = pane.eol;
+  pane.savedEncoding = pane.encoding;
+  pane.modified = false;
+  pane.view.dispatch({ effects: markSavedEffect.of(null) });
+  updateStatusBar();
+  return true;
+}
+
+async function saveSplitFileAs(pane = currentPane()) {
+  if (!pane.view || !window.electronAPI) return false;
+  const content = pane.view.state.doc.toString();
+  const result = await window.electronAPI.saveAs({
+    content: content.replace(/\n/g, pane.eol),
+    defaultPath: pane.filePath || 'untitled.txt',
+    encoding: pane.encoding,
+  });
+  if (!result.success) {
+    if (!result.canceled) reportSaveError(result.filePath || 'file', result.error);
+    return false;
+  }
+  pane.filePath = result.filePath;
+  pane.savedContent = content;
+  pane.savedEol = pane.eol;
+  pane.savedEncoding = pane.encoding;
+  pane.modified = false;
+  pane.language = detectLanguageKey(pane.filePath, content);
+  pane.view.dispatch({
+    effects: [splitLanguageCompartment.reconfigure(languageExtensionFor(pane.language)), markSavedEffect.of(null)],
+  });
+  updateStatusBar();
+  return true;
+}
+
+async function confirmDiscardSplit(pane = currentPane()) {
+  if (!pane.modified || !pane.filePath) return true;
+  const choice = await confirmDiscard(`Save changes to ${getFileName(pane.filePath)}?`);
+  if (choice === 2) return false;
+  if (choice === 0) return saveSplitFile({}, pane);
+  return true;
+}
+
+async function confirmDiscardAllPanes() {
+  for (const p of openPanes()) {
+    if (!(await confirmDiscardSplit(p))) return false;
+  }
+  return true;
+}
+
+function destroySplitEditor(pane = currentPane()) {
+  if (pane.autoSaveTimer) clearTimeout(pane.autoSaveTimer);
+  pane.autoSaveTimer = null;
+  if (pane.view) {
+    pane.view.destroy();
+    pane.view = null;
+  }
+  if (pane.el) pane.el.innerHTML = '';
+  pane.filePath = null;
+  pane.modified = false;
+  pane.savedContent = '';
+  pane.mode = null;
+  pane.tabId = null;
+}
+
+function createSplitEditor(content, langExt, mode, pane = currentPane()) {
+  destroySplitEditor(pane);
+  pane.mode = mode;
 
   const extensions = [
+    ...bookmarkExtensions(),
+    ...changeHistoryExtensions(splitChangeHistoryCompartment),
+    closerPlugin,
     lineNumbers(),
     highlightActiveLineGutter(),
     highlightSpecialChars(),
@@ -1476,21 +3846,23 @@ function createSplitEditor(content, langExt, readOnly) {
     crosshairCursor(),
     highlightActiveLine(),
     highlightSelectionMatches(),
-    languageCompartment.of(langExt),
+    splitLanguageCompartment.of(langExt),
     splitWrapCompartment.of(wordWrap ? EditorView.lineWrapping : []),
-    splitFontCompartment.of([]),
+    splitFontCompartment.of(paneTheme(currentFontFamily)),
+    splitWhitespaceCompartment.of(whitespaceExt()),
+    splitEolCompartment.of(showEol ? eolMarkerPlugin(() => paneEolLabel(pane)) : []),
     wikiLinkPlugin,
     ViewPlugin.fromClass(class {
       constructor(view) {
-        this.decorations = buildCompareDecorations(view, rightCompareRanges);
+        this.decorations = buildCompareDecorations(view, mode === 'compare' ? rightCompareRanges : []);
       }
       update(update) {
         if (update.docChanged || update.viewportChanged) {
-          this.decorations = buildCompareDecorations(update.view, rightCompareRanges);
+          this.decorations = buildCompareDecorations(update.view, mode === 'compare' ? rightCompareRanges : []);
         }
       }
     }, { decorations: v => v.decorations }),
-    isDarkTheme ? oneDark : [],
+    splitThemeCompartment.of(isDarkTheme ? oneDark : []),
     autoCapExtension,
     keymap.of([
       ...closeBracketsKeymap,
@@ -1512,94 +3884,193 @@ function createSplitEditor(content, langExt, readOnly) {
     }),
   ];
 
-  if (readOnly) {
+  extensions.push(
+    EditorView.updateListener.of((update) => {
+      if (update.selectionSet || update.docChanged) updateStatusBar();
+      if (update.docChanged) scheduleFunctionListRefresh();
+    })
+  );
+
+  if (mode === 'compare') {
     extensions.push(EditorState.readOnly.of(true));
+  } else if (mode === 'file') {
+    extensions.push(
+      EditorView.updateListener.of((update) => {
+        if (!update.docChanged) return;
+        pane.modified = computeSplitModified(pane);
+        if (pane.modified) scheduleSplitAutoSave(pane);
+      })
+    );
+  } else if (mode === 'tab') {
+    extensions.push(
+      EditorView.updateListener.of((update) => {
+        if (!update.docChanged || syncingSplit) return;
+        const tab = tabs.find(t => t.id === pane.tabId);
+        if (!tab) return;
+        mirrorFromPane(pane, tab, update);
+      })
+    );
   } else {
     extensions.push(
       EditorView.updateListener.of((update) => {
-        if (update.docChanged && !compareMode) {
-          const mainDoc = editorView.state.doc.toString();
-          const splitDoc = splitEditorView.state.doc.toString();
-          if (mainDoc !== splitDoc) {
-            editorView.dispatch({
-              changes: { from: 0, to: editorView.state.doc.length, insert: splitDoc },
-            });
-          }
-        }
+        if (!update.docChanged || syncingSplit) return;
+        const tab = getActiveTab();
+        if (tab) mirrorFromPane(pane, tab, update);
       })
     );
   }
 
   const splitState = EditorState.create({ doc: content, extensions });
 
-  splitEditorView = new EditorView({
+  pane.view = new EditorView({
     state: splitState,
-    parent: splitEl,
+    parent: pane.el,
   });
 
-  return splitEditorView;
+  applyPaneBackground(pane.view, rightBgColor);
+  applyFontSize();
+  return pane.view;
 }
 
-function toggleSplitView() {
+function createClonePane(pane) {
+  const tab = getActiveTab();
+  const content = editorView.state.doc.toString();
+  const langExt = tab ? languageExtensionFor(tab.language) : [];
+  createSplitEditor(content, langExt, 'clone', pane);
+}
+
+async function loadTabIntoSplitPane(tab, pane = currentPane()) {
+  if (pane.mode === 'tab' && pane.tabId === tab.id && pane.view) {
+    pane.view.focus();
+    return;
+  }
+  if (compareMode) closeCompare();
+  if (!(await confirmDiscardSplit(pane))) return;
+  if (tab.id === activeTabId && proseMode) syncProseToEditor();
+
+  if (!splitView) showSplitLayout();
+  createSplitEditor(tabContent(tab), languageExtensionFor(tab.language), 'tab', pane);
+  pane.tabId = tab.id;
+  pane.view.focus();
+  updateStatusBar();
+}
+
+// Two-pane layout: main editor left, pane 0 right.
+function showSplitLayout() {
+  splitView = true;
+  document.getElementById('editor-area').classList.add('split-view');
+  if (proseMode) {
+    document.getElementById('prose-editor').style.width = '50%';
+  } else {
+    document.getElementById('editor').style.width = '50%';
+  }
+}
+
+// Closes every extra pane and returns to a single editor.
+function hideSplitLayout() {
+  splitView = false;
+  gridView = false;
+  const area = document.getElementById('editor-area');
+  area.classList.remove('split-view', 'grid-view');
+  area.style.removeProperty('--grid-col');
+  area.style.removeProperty('--grid-row');
+  document.getElementById('editor').style.width = '';
+  document.getElementById('prose-editor').style.width = '';
+  for (const p of panes) destroySplitEditor(p);
+  document.getElementById('btn-split-grid') && document.getElementById('btn-split-grid').classList.remove('active');
+  if (focusedPane === 'right') focusedPane = proseMode ? 'prose' : 'left';
+  focusedExtra = 0;
+}
+
+// Four-pane grid: main editor top-left, pane 0 top-right, panes 1 and 2
+// on the bottom row. Empty cells start as clones of the active tab.
+function showGridLayout() {
+  splitView = true;
+  gridView = true;
+  const area = document.getElementById('editor-area');
+  area.classList.remove('split-view');
+  area.classList.add('grid-view');
+  document.getElementById('editor').style.width = '';
+  document.getElementById('prose-editor').style.width = '';
+  for (const p of panes) {
+    if (!p.view) createClonePane(p);
+  }
+}
+
+// Leaves the grid for the two-pane layout, keeping pane 0.
+async function leaveGridLayout() {
+  for (const p of panes.slice(1)) {
+    if (!(await confirmDiscardSplit(p))) return false;
+  }
+  for (const p of panes.slice(1)) destroySplitEditor(p);
+  gridView = false;
+  const area = document.getElementById('editor-area');
+  area.classList.remove('grid-view');
+  area.style.removeProperty('--grid-col');
+  area.style.removeProperty('--grid-row');
+  if (focusedPane === 'right' && focusedExtra > 0) {
+    focusedExtra = 0;
+    if (panes[0].view) panes[0].view.focus();
+  }
+  showSplitLayout();
+  return true;
+}
+
+async function toggleGridView() {
+  if (compareMode) return;
+  if (gridView) {
+    await leaveGridLayout();
+    return;
+  }
+  showGridLayout();
+}
+
+// A pane whose tab was closed: in the grid it becomes a clone so the
+// grid keeps its shape; in the two-pane layout the split closes.
+function vacatePane(pane) {
+  if (gridView) createClonePane(pane);
+  else hideSplitLayout();
+}
+
+async function toggleSplitView() {
   if (compareMode) {
     closeCompare();
     return;
   }
 
-  splitView = !splitView;
-  const editorArea = document.getElementById('editor-area');
-  const editorEl = document.getElementById('editor');
-  const proseEl = document.getElementById('prose-editor');
-
   if (splitView) {
-    editorArea.classList.add('split-view');
-    if (proseMode) {
-      proseEl.style.width = '50%';
-    } else {
-      editorEl.style.width = '50%';
-    }
-    if (!splitEditorView) {
-      const tab = getActiveTab();
-      const content = tab ? tab.content : '';
-      const langExt = tab ? getLanguageExtension(tab.filePath) : [];
-      createSplitEditor(content, langExt, false);
-    }
-  } else {
-    editorArea.classList.remove('split-view');
-    editorEl.style.width = '';
-    proseEl.style.width = '';
-    if (splitEditorView) {
-      splitEditorView.destroy();
-      splitEditorView = null;
-    }
+    if (!(await confirmDiscardAllPanes())) return;
+    hideSplitLayout();
+    return;
   }
+
+  showSplitLayout();
+  if (!panes[0].view) createClonePane(panes[0]);
 }
 
 async function loadFileIntoSplitPane(filePath) {
   if (!window.electronAPI) return;
+  if (compareMode) closeCompare();
+  if (!(await confirmDiscardSplit())) return;
+
   const result = await window.electronAPI.readFile({ filePath });
   if (!result.success) return;
   await window.electronAPI.trackRecentFile({ filePath });
 
-  if (!splitView) {
-    splitView = true;
-    const editorArea = document.getElementById('editor-area');
-    const editorEl = document.getElementById('editor');
-    const proseEl = document.getElementById('prose-editor');
-    editorArea.classList.add('split-view');
-    if (proseMode) {
-      proseEl.style.width = '50%';
-    } else {
-      editorEl.style.width = '50%';
-    }
-  }
+  if (!splitView) showSplitLayout();
 
-  const langExt = getLanguageExtension(filePath);
-  if (splitEditorView) {
-    splitEditorView.destroy();
-    splitEditorView = null;
-  }
-  createSplitEditor(result.content, langExt, false);
+  const content = normalizeNewlines(result.content);
+  sp.language = detectLanguageKey(filePath, content);
+  createSplitEditor(content, languageExtensionFor(sp.language), 'file');
+  sp.filePath = filePath;
+  sp.eol = detectEol(result.content);
+  sp.savedEol = sp.eol;
+  sp.encoding = result.encoding || 'utf8';
+  sp.savedEncoding = sp.encoding;
+  sp.savedContent = content;
+  sp.modified = false;
+  sp.view.focus();
+  refreshEolMarkers();
 }
 
 function initSplitGutter() {
@@ -1631,6 +4102,65 @@ function initSplitGutter() {
     dragging = false;
     document.body.classList.remove('dragging-split');
   });
+
+  // Grid dividers: vertical sets --grid-col, horizontal sets --grid-row.
+  const area = document.getElementById('editor-area');
+  let gridDrag = null;
+  const gv = document.getElementById('grid-gutter-v');
+  const gh = document.getElementById('grid-gutter-h');
+  gv.addEventListener('mousedown', (e) => { e.preventDefault(); gridDrag = 'col'; document.body.classList.add('dragging-split'); });
+  gh.addEventListener('mousedown', (e) => { e.preventDefault(); gridDrag = 'row'; document.body.classList.add('dragging-grid-row'); });
+  document.addEventListener('mousemove', (e) => {
+    if (!gridDrag) return;
+    const rect = area.getBoundingClientRect();
+    if (gridDrag === 'col') {
+      const pct = Math.max(15, Math.min(85, ((e.clientX - rect.left) / rect.width) * 100));
+      area.style.setProperty('--grid-col', pct + '%');
+    } else {
+      const pct = Math.max(15, Math.min(85, ((e.clientY - rect.top) / rect.height) * 100));
+      area.style.setProperty('--grid-row', pct + '%');
+    }
+  });
+  document.addEventListener('mouseup', () => {
+    if (!gridDrag) return;
+    gridDrag = null;
+    document.body.classList.remove('dragging-split', 'dragging-grid-row');
+  });
+}
+
+// Shift+F10 / Menu key: open the edit context menu at the caret.
+function openKeyboardContextMenu() {
+  if (!window.electronAPI || !window.electronAPI.showContextMenu) return;
+  let x, y, word = '';
+  const prose = document.getElementById('prose-editor');
+  if (proseMode && document.activeElement === prose) {
+    const r = prose.getBoundingClientRect();
+    x = r.left + 40; y = r.top + 40;
+    const text = prose.value;
+    const pos = prose.selectionStart;
+    const before = /[\p{L}\p{M}'’-]*$/u.exec(text.slice(0, pos));
+    const after = /^[\p{L}\p{M}'’-]*/u.exec(text.slice(pos));
+    word = (before ? before[0] : '') + (after ? after[0] : '');
+  } else {
+    const view = activeView();
+    if (!view) return;
+    const head = view.state.selection.main.head;
+    const coords = view.coordsAtPos(head);
+    if (coords) { x = coords.left; y = coords.bottom; }
+    else { const r = view.dom.getBoundingClientRect(); x = r.left + 40; y = r.top + 40; }
+    const w = view.state.wordAt(head);
+    if (w) word = view.state.sliceDoc(w.from, w.to);
+  }
+  window.electronAPI.showContextMenu({ x: Math.round(x), y: Math.round(y), word });
+}
+
+function resetSplitDivider() {
+  if (!splitView && !compareMode) return;
+  document.getElementById('editor').style.width = '';
+  document.getElementById('prose-editor').style.width = '';
+  const area = document.getElementById('editor-area');
+  area.style.removeProperty('--grid-col');
+  area.style.removeProperty('--grid-row');
 }
 
 let pendingCompare = false;
@@ -1641,25 +4171,25 @@ function openCompare() {
   window.electronAPI.openFile();
 }
 
-function startCompare(rightPath, rightContent) {
+async function startCompare(rightPath, rightContent) {
+  if (gridView && !(await leaveGridLayout())) return;
+  if (!(await confirmDiscardSplit(panes[0]))) return;
+
   const tab = getActiveTab();
   const leftContent = editorView.state.doc.toString();
   const leftName = tab && tab.filePath ? getFileName(tab.filePath) : 'Untitled';
   const rightName = getFileName(rightPath);
 
   compareMode = true;
-  splitView = true;
-
-  const editorArea = document.getElementById('editor-area');
-  editorArea.classList.add('split-view');
-  document.getElementById('editor').style.width = '50%';
+  compareRightPath = rightPath;
+  showSplitLayout();
 
   computeCompareRanges(leftContent, rightContent);
 
-  editorView.dispatch({ effects: [] });
+  editorView.dispatch({ effects: refreshDecorations.of(null) });
 
-  const langExt = getLanguageExtension(rightPath);
-  createSplitEditor(rightContent, langExt, true);
+  const langExt = getLanguageExtension(rightPath, rightContent);
+  createSplitEditor(rightContent, langExt, 'compare', panes[0]);
 
   document.getElementById('compare-left-name').textContent = leftName;
   document.getElementById('compare-right-name').textContent = rightName;
@@ -1708,69 +4238,70 @@ function computeCompareRanges(leftContent, rightContent) {
   }
 }
 
+let compareScrollCleanup = null;
+
 function syncCompareScroll() {
-  if (!editorView || !splitEditorView) return;
+  if (!editorView || !panes[0].view) return;
+  if (compareScrollCleanup) compareScrollCleanup();
 
   let syncing = false;
 
   const leftScroller = editorView.scrollDOM;
-  const rightScroller = splitEditorView.scrollDOM;
+  const rightScroller = panes[0].view.scrollDOM;
 
-  leftScroller.addEventListener('scroll', () => {
+  const onLeft = () => {
     if (syncing) return;
     syncing = true;
     rightScroller.scrollTop = leftScroller.scrollTop;
     syncing = false;
-  });
-
-  rightScroller.addEventListener('scroll', () => {
+  };
+  const onRight = () => {
     if (syncing) return;
     syncing = true;
     leftScroller.scrollTop = rightScroller.scrollTop;
     syncing = false;
-  });
+  };
+
+  leftScroller.addEventListener('scroll', onLeft);
+  rightScroller.addEventListener('scroll', onRight);
+
+  compareScrollCleanup = () => {
+    leftScroller.removeEventListener('scroll', onLeft);
+    rightScroller.removeEventListener('scroll', onRight);
+    compareScrollCleanup = null;
+  };
 }
 
 function closeCompare() {
   compareMode = false;
-  splitView = false;
+  compareRightPath = null;
+  if (compareScrollCleanup) compareScrollCleanup();
 
   leftCompareRanges = [];
   rightCompareRanges = [];
 
-  editorView.dispatch({ effects: [] });
+  editorView.dispatch({ effects: refreshDecorations.of(null) });
 
-  const editorArea = document.getElementById('editor-area');
-  editorArea.classList.remove('split-view');
-  document.getElementById('editor').style.width = '';
-
-  if (splitEditorView) {
-    splitEditorView.destroy();
-    splitEditorView = null;
-  }
+  hideSplitLayout();
 
   document.getElementById('compare-bar').classList.add('hidden');
 }
 
 // Theme toggle
-let isDarkTheme = true;
+let isDarkTheme = false;
 const themeCompartment = new Compartment();
+const splitThemeCompartment = new Compartment();
 
 function toggleTheme() {
   isDarkTheme = !isDarkTheme;
-  document.body.classList.toggle('light-theme', !isDarkTheme);
+  document.body.classList.toggle('dark-theme', isDarkTheme);
 
   editorView.dispatch({
     effects: themeCompartment.reconfigure(isDarkTheme ? oneDark : []),
   });
 
-  if (splitEditorView) {
-    splitEditorView.destroy();
-    splitEditorView = null;
-    if (splitView) {
-      toggleSplitView();
-      toggleSplitView();
-    }
+  for (const p of openPanes()) {
+    p.view.dispatch({ effects: splitThemeCompartment.reconfigure(isDarkTheme ? oneDark : []) });
   }
 }
 
@@ -1794,9 +4325,12 @@ function toggleSidebar() {
 }
 
 function initDragAndDrop() {
-  const editorEl = document.getElementById('editor');
-  const splitEl = document.getElementById('editor-split');
-  const proseEl = document.getElementById('prose-editor');
+  const editorArea = document.getElementById('editor-area');
+  let dropOverlay = document.createElement('div');
+  dropOverlay.id = 'drop-overlay';
+  dropOverlay.innerHTML = '<div class="drop-zone drop-left"><span>Open in Tab</span></div><div class="drop-zone drop-right"><span>Open in Split</span></div>';
+  editorArea.appendChild(dropOverlay);
+  let dragCounter = 0;
 
   document.addEventListener('dragover', (e) => {
     e.preventDefault();
@@ -1806,67 +4340,1032 @@ function initDragAndDrop() {
   document.addEventListener('drop', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    editorEl.classList.remove('drag-over');
-    splitEl.classList.remove('drag-over');
-    proseEl.classList.remove('drag-over');
+    dragCounter = 0;
+    dropOverlay.classList.remove('visible');
   });
 
-  function addDropTarget(el, handler) {
-    let dragCounter = 0;
+  editorArea.addEventListener('dragenter', (e) => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter++;
+    dropOverlay.classList.add('visible');
+  });
 
-    el.addEventListener('dragenter', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      dragCounter++;
-      el.classList.add('drag-over');
-    });
+  editorArea.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = editorArea.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const isRight = x > rect.width / 2;
+    dropOverlay.classList.toggle('highlight-right', isRight);
+    dropOverlay.classList.toggle('highlight-left', !isRight);
+  });
 
-    el.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-    });
-
-    el.addEventListener('dragleave', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      dragCounter--;
-      if (dragCounter <= 0) {
-        dragCounter = 0;
-        el.classList.remove('drag-over');
-      }
-    });
-
-    el.addEventListener('drop', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
+  editorArea.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter--;
+    if (dragCounter <= 0) {
       dragCounter = 0;
-      el.classList.remove('drag-over');
+      dropOverlay.classList.remove('visible', 'highlight-left', 'highlight-right');
+    }
+  });
 
-      if (e.dataTransfer.files.length > 0) {
-        for (const file of e.dataTransfer.files) {
-          if (file.path) {
-            handler(file.path);
-          }
-        }
+  editorArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter = 0;
+    dropOverlay.classList.remove('visible', 'highlight-left', 'highlight-right');
+
+    if (!e.dataTransfer.files.length) return;
+
+    const rect = editorArea.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const isRight = x > rect.width / 2;
+
+    for (const file of e.dataTransfer.files) {
+      const filePath = window.electronAPI && window.electronAPI.getPathForFile
+        ? window.electronAPI.getPathForFile(file)
+        : file.path;
+      if (!filePath) continue;
+      if (isRight) {
+        loadFileIntoSplitPane(filePath);
+      } else {
+        openFileFromPath(filePath);
       }
+    }
+  });
+}
+
+const commands = {
+  'new': () => createTab(null, ''),
+  'save': () => saveCurrentFile(),
+  'save-as': () => saveCurrentFileAs(),
+  'save-copy-as': () => saveCopyAs(),
+  'save-all': () => saveAllTabs(),
+  'reload': () => reloadCurrent(),
+  'close': () => closeTab(activeTabId),
+  'close-all': () => closeAllTabs(),
+  'close-others': () => closeTabsWhere(t => t.id !== activeTabId),
+  'close-left': () => closeTabsWhere((t, i) => i < tabs.findIndex(x => x.id === activeTabId)),
+  'close-right': () => closeTabsWhere((t, i) => i > tabs.findIndex(x => x.id === activeTabId)),
+  'close-unchanged': () => closeTabsWhere(t => !t.modified),
+  'open-containing-folder': () => openContainingFolder(),
+  'open-default-viewer': () => openInDefaultViewer(),
+  'summary': () => showSummary(),
+  'undo': () => doUndo(),
+  'redo': () => doRedo(),
+  'copy-path': () => copyToClipboard(currentFilePath()),
+  'copy-filename': () => copyToClipboard(currentFilePath() ? getFileName(currentFilePath()) : null),
+  'copy-dir': () => {
+    const p = currentFilePath();
+    if (p) copyToClipboard(p.replace(/\\/g, '/').split('/').slice(0, -1).join('/'));
+  },
+  'transform': (type) => transformText(type),
+  'line-op': (type) => lineOperation(type),
+  'toggle-line-comment': () => { const v = editableView(); if (v) toggleComment(v); },
+  'toggle-block-comment': () => { const v = editableView(); if (v) toggleBlockComment(v); },
+  'set-eol': (eol) => setEol(eol),
+  'set-encoding': (enc) => setEncoding(enc),
+  'reopen-encoding': (enc) => reloadCurrent(enc),
+  'set-language': (key) => setLanguage(key),
+  'rename': () => showRenameDialog(null),
+  'print': () => printCurrent(),
+  'column-editor': () => showColumnEditor(),
+  'link-map': () => toggleLinkMap(),
+  'toggle-toolbar': () => toggleToolbar(),
+  'customize-toolbar': () => showToolbarDialog(),
+  'change-history': (action) => changeHistoryCommand(action),
+  'check-closers': () => runCloserCheck(),
+  'find': () => openFind(),
+  'replace': () => openFind(),
+  'find-in-files': () => showFindInFiles(),
+  'bookmark': (action) => bookmarkCommand(action),
+  'goto-line': () => showGotoLineDialog(),
+  'toggle-sidebar': () => toggleSidebar(),
+  'toggle-minimap': () => toggleMinimap(),
+  'toggle-whitespace': () => toggleShowWhitespace(),
+  'toggle-eol-markers': () => toggleShowEol(),
+  'fold-all': () => foldAll(activeView()),
+  'unfold-all': () => unfoldAll(activeView()),
+  'toggle-wrap': () => toggleWordWrap(),
+  'zoom-in': () => setFontSize(fontSize + 2),
+  'zoom-out': () => setFontSize(fontSize - 2),
+  'zoom-reset': () => setFontSize(14),
+  'toggle-split': () => toggleSplitView(),
+  'split-reset': () => resetSplitDivider(),
+  'split-grid': () => toggleGridView(),
+  'focus-other-view': () => focusOtherView(),
+  'tab': (action) => tabCommand(action),
+  'toggle-theme': () => toggleTheme(),
+  'language-picker': () => showLanguageMenu(document.getElementById('status-lang')),
+  'shortcuts': () => showShortcutsDialog(),
+  'command-palette': () => showCommandPalette(),
+  'context-menu': () => openKeyboardContextMenu(),
+  'toggle-prose': () => toggleProseMode(),
+  'grammar-check': () => runGrammarCheck(),
+  'compare': () => openCompare(),
+  'focus-next': () => cycleFocus(1),
+  'focus-prev': () => cycleFocus(-1),
+  'sidebar-panel': (panel) => showSidebarPanel(panel),
+  'search-result': (dir) => stepSearchResult(dir === 'prev' ? -1 : 1),
+};
+
+function runCommand(name, arg) {
+  const fn = commands[name];
+  if (fn) fn(arg);
+}
+
+// Toolbar customization
+const TOOLBAR_CATALOG = [
+  { group: 'File', items: [
+    { id: 'btn-new', label: 'New' },
+    { id: 'btn-open', label: 'Open' },
+    { id: 'btn-save', label: 'Save' },
+    { id: 'btn-save-as', label: 'Save As' },
+    { id: 'reload', label: 'Reload', title: 'Reload from Disk', cmd: 'reload' },
+    { id: 'save-copy-as', label: 'Save Copy', title: 'Save a Copy As', cmd: 'save-copy-as' },
+    { id: 'save-all', label: 'Save All', cmd: 'save-all' },
+    { id: 'rename', label: 'Rename', cmd: 'rename' },
+    { id: 'close', label: 'Close', title: 'Close tab', cmd: 'close' },
+    { id: 'close-all', label: 'Close All', cmd: 'close-all' },
+    { id: 'close-others', label: 'Close Others', title: 'Close All But Active', cmd: 'close-others' },
+    { id: 'open-folder', label: 'Open Folder', run: () => window.electronAPI && window.electronAPI.openFolder() },
+    { id: 'open-containing-folder', label: 'Show in Folder', title: 'Open Containing Folder', cmd: 'open-containing-folder' },
+    { id: 'open-default-viewer', label: 'Open With', title: 'Open in Default Viewer', cmd: 'open-default-viewer' },
+    { id: 'summary', label: 'Summary', title: 'File Summary', cmd: 'summary' },
+    { id: 'print', label: 'Print', cmd: 'print' },
+  ] },
+  { group: 'Edit', items: [
+    { id: 'undo', label: 'Undo', cmd: 'undo' },
+    { id: 'redo', label: 'Redo', cmd: 'redo' },
+    { id: 'cut', label: 'Cut', run: () => editAction('cut') },
+    { id: 'copy', label: 'Copy', run: () => editAction('copy') },
+    { id: 'paste', label: 'Paste', run: () => editAction('paste') },
+    { id: 'select-all', label: 'Select All', run: () => editAction('selectAll') },
+    { id: 'copy-path', label: 'Copy Path', title: 'Copy Full File Path', cmd: 'copy-path' },
+    { id: 'copy-filename', label: 'Copy Name', title: 'Copy File Name', cmd: 'copy-filename' },
+    { id: 'copy-dir', label: 'Copy Dir', title: 'Copy Directory Path', cmd: 'copy-dir' },
+    { id: 'upper', label: 'UPPER', title: 'UPPERCASE', cmd: 'transform', arg: 'uppercase' },
+    { id: 'lower', label: 'lower', title: 'lowercase', cmd: 'transform', arg: 'lowercase' },
+    { id: 'proper', label: 'Proper', title: 'Proper Case', cmd: 'transform', arg: 'propercase' },
+    { id: 'title', label: 'Title', title: 'Title Case', cmd: 'transform', arg: 'titlecase' },
+    { id: 'sentence', label: 'Sentence', title: 'Sentence case', cmd: 'transform', arg: 'sentencecase' },
+    { id: 'invert', label: 'iNVERT', title: 'iNVERT cASE', cmd: 'transform', arg: 'invertcase' },
+    { id: 'random', label: 'ranDOm', title: 'ranDOm CasE', cmd: 'transform', arg: 'randomcase' },
+    { id: 'camel', label: 'camelCase', cmd: 'transform', arg: 'camelcase' },
+    { id: 'dup-line', label: 'Duplicate', title: 'Duplicate Current Line', cmd: 'line-op', arg: 'duplicate' },
+    { id: 'join', label: 'Join', title: 'Join Lines', cmd: 'line-op', arg: 'join' },
+    { id: 'move-up', label: 'Line Up', title: 'Move Up Current Line', cmd: 'line-op', arg: 'move-up' },
+    { id: 'move-down', label: 'Line Down', title: 'Move Down Current Line', cmd: 'line-op', arg: 'move-down' },
+    { id: 'sort-asc', label: 'Sort A-Z', title: 'Sort Lines Ascending', cmd: 'line-op', arg: 'sort-asc' },
+    { id: 'sort-desc', label: 'Sort Z-A', title: 'Sort Lines Descending', cmd: 'line-op', arg: 'sort-desc' },
+    { id: 'sort-asc-ci', label: 'Sort a-z', title: 'Sort Lines Ascending Ignoring Case', cmd: 'line-op', arg: 'sort-asc-ci' },
+    { id: 'sort-desc-ci', label: 'Sort z-a', title: 'Sort Lines Descending Ignoring Case', cmd: 'line-op', arg: 'sort-desc-ci' },
+    { id: 'sort-num-asc', label: 'Sort 1-9', title: 'Sort Lines As Numbers Ascending', cmd: 'line-op', arg: 'sort-num-asc' },
+    { id: 'sort-num-desc', label: 'Sort 9-1', title: 'Sort Lines As Numbers Descending', cmd: 'line-op', arg: 'sort-num-desc' },
+    { id: 'remove-dupes', label: 'Dedupe', title: 'Remove Duplicate Lines', cmd: 'line-op', arg: 'remove-dupes' },
+    { id: 'remove-consecutive-dupes', label: 'Dedupe Adjacent', title: 'Remove Consecutive Duplicate Lines', cmd: 'line-op', arg: 'remove-consecutive-dupes' },
+    { id: 'remove-empty', label: 'No Empties', title: 'Remove Empty Lines', cmd: 'line-op', arg: 'remove-empty' },
+    { id: 'trim', label: 'Trim', title: 'Trim Trailing Whitespace', cmd: 'line-op', arg: 'trim' },
+    { id: 'reverse', label: 'Reverse', title: 'Reverse Line Order', cmd: 'line-op', arg: 'reverse' },
+    { id: 'randomize', label: 'Shuffle', title: 'Randomize Line Order', cmd: 'line-op', arg: 'randomize' },
+    { id: 'toggle-line-comment', label: 'Comment', title: 'Toggle Single Line Comment', cmd: 'toggle-line-comment' },
+    { id: 'toggle-block-comment', label: 'Block Comment', title: 'Toggle Block Comment', cmd: 'toggle-block-comment' },
+    { id: 'column-editor', label: 'Columns', title: 'Column Editor', cmd: 'column-editor' },
+    { id: 'eol-crlf', label: 'CRLF', title: 'Convert line endings to Windows (CR LF)', cmd: 'set-eol', arg: '\r\n' },
+    { id: 'eol-lf', label: 'LF', title: 'Convert line endings to Unix (LF)', cmd: 'set-eol', arg: '\n' },
+    { id: 'eol-cr', label: 'CR', title: 'Convert line endings to Macintosh (CR)', cmd: 'set-eol', arg: '\r' },
+  ] },
+  { group: 'Search', items: [
+    { id: 'btn-find', label: 'Find' },
+    { id: 'btn-replace', label: 'Replace' },
+    { id: 'btn-goto', label: 'Go to' },
+    { id: 'find-in-files', label: 'Find in Files', cmd: 'find-in-files' },
+    { id: 'bm-toggle', label: 'Bookmark', title: 'Toggle Bookmark', cmd: 'bookmark', arg: 'toggle' },
+    { id: 'bm-next', label: 'Next Mark', title: 'Next Bookmark', cmd: 'bookmark', arg: 'next' },
+    { id: 'bm-prev', label: 'Prev Mark', title: 'Previous Bookmark', cmd: 'bookmark', arg: 'prev' },
+    { id: 'bm-clear', label: 'Clear Marks', title: 'Clear All Bookmarks', cmd: 'bookmark', arg: 'clear' },
+    { id: 'bm-cut', label: 'Cut Marked', title: 'Cut Bookmarked Lines', cmd: 'bookmark', arg: 'cut' },
+    { id: 'bm-copy', label: 'Copy Marked', title: 'Copy Bookmarked Lines', cmd: 'bookmark', arg: 'copy' },
+    { id: 'bm-remove', label: 'Remove Marked', title: 'Remove Bookmarked Lines', cmd: 'bookmark', arg: 'remove' },
+    { id: 'bm-remove-unmarked', label: 'Keep Marked', title: 'Remove Unmarked Lines', cmd: 'bookmark', arg: 'remove-unmarked' },
+    { id: 'bm-inverse', label: 'Invert Marks', title: 'Inverse Bookmark', cmd: 'bookmark', arg: 'inverse' },
+    { id: 'ch-next', label: 'Next Change', title: 'Go to Next Change', cmd: 'change-history', arg: 'next' },
+    { id: 'ch-prev', label: 'Prev Change', title: 'Go to Previous Change', cmd: 'change-history', arg: 'prev' },
+    { id: 'ch-clear', label: 'Clear Changes', title: 'Clear Change History', cmd: 'change-history', arg: 'clear' },
+    { id: 'ch-toggle', label: 'Change Bars', title: 'Toggle Change History Margin', cmd: 'change-history', arg: 'toggle' },
+    { id: 'btn-closers', label: 'Closers' },
+  ] },
+  { group: 'Encoding and Language', items: [
+    { id: 'enc-utf8', label: 'UTF-8', title: 'Convert to UTF-8', cmd: 'set-encoding', arg: 'utf8' },
+    { id: 'enc-utf8bom', label: 'UTF-8-BOM', title: 'Convert to UTF-8-BOM', cmd: 'set-encoding', arg: 'utf8bom' },
+    { id: 'enc-utf16le', label: 'UTF-16 LE', title: 'Convert to UTF-16 LE', cmd: 'set-encoding', arg: 'utf16le' },
+    { id: 'enc-utf16be', label: 'UTF-16 BE', title: 'Convert to UTF-16 BE', cmd: 'set-encoding', arg: 'utf16be' },
+    { id: 'enc-ansi', label: 'ANSI', title: 'Convert to ANSI (Windows-1252)', cmd: 'set-encoding', arg: 'ansi' },
+    { id: 'language-menu', label: 'Language', title: 'Choose language', run: (el) => showLanguageMenu(el) },
+  ] },
+  { group: 'View', items: [
+    { id: 'btn-fold-all', label: 'Fold All' },
+    { id: 'btn-unfold-all', label: 'Unfold All' },
+    { id: 'btn-wrap', label: 'Wrap' },
+    { id: 'btn-minimap', label: 'Minimap' },
+    { id: 'btn-sidebar-toggle', label: 'Sidebar' },
+    { id: 'btn-zoom-in', label: 'A+ (zoom in)' },
+    { id: 'btn-zoom-out', label: 'A- (zoom out)' },
+    { id: 'zoom-reset', label: 'A=', title: 'Reset Zoom', cmd: 'zoom-reset' },
+    { id: 'font-group', label: 'Font picker', widget: true },
+    { id: 'bg-group', label: 'Background color', widget: true },
+    { id: 'bg-presets', label: 'Background presets', widget: true },
+    { id: 'toggle-whitespace', label: 'Spaces', title: 'Toggle Show Space and Tab', cmd: 'toggle-whitespace' },
+    { id: 'toggle-eol-markers', label: 'EOL Marks', title: 'Toggle Show End of Line', cmd: 'toggle-eol-markers' },
+    { id: 'toggle-split', label: 'Split', title: 'Toggle Split View', cmd: 'toggle-split' },
+    { id: 'split-grid', label: 'Grid', title: 'Four-Pane Grid', cmd: 'split-grid' },
+    { id: 'split-reset', label: 'Even Split', title: 'Reset Split to Equal Halves', cmd: 'split-reset' },
+    { id: 'focus-other-view', label: 'Other Pane', title: 'Focus Other View', cmd: 'focus-other-view' },
+    { id: 'btn-link-map', label: 'Map' },
+    { id: 'tab-next', label: 'Next Tab', cmd: 'tab', arg: 'next' },
+    { id: 'tab-prev', label: 'Prev Tab', title: 'Previous Tab', cmd: 'tab', arg: 'prev' },
+    { id: 'tab-first', label: 'First Tab', cmd: 'tab', arg: 'first' },
+    { id: 'tab-last', label: 'Last Tab', cmd: 'tab', arg: 'last' },
+    { id: 'toggle-theme', label: 'Theme', title: 'Toggle Theme (Dark/Light)', cmd: 'toggle-theme' },
+    { id: 'autosave-indicator', label: 'Auto-save indicator', widget: true },
+  ] },
+  { group: 'Tools', items: [
+    { id: 'btn-prose', label: 'Prose' },
+    { id: 'btn-autocap', label: 'AutoCap' },
+    { id: 'btn-grammar', label: 'Grammar' },
+    { id: 'btn-compare', label: 'Compare' },
+    { id: 'command-palette', label: 'Palette', title: 'Command Palette', cmd: 'command-palette' },
+    { id: 'shortcuts', label: 'Keys', title: 'Keyboard Shortcuts', cmd: 'shortcuts' },
+  ] },
+];
+
+const TOOLBAR_ITEMS = TOOLBAR_CATALOG.flatMap(g => g.items);
+const TOOLBAR_BUILTIN = new Set(TOOLBAR_ITEMS.filter(i => !i.cmd && !i.run).map(i => i.id));
+let toolbarHidden = new Set();
+let toolbarExtra = [];
+let toolbarCollapsed = false;
+
+function editAction(action) {
+  if (window.electronAPI && window.electronAPI.editAction) {
+    window.electronAPI.editAction({ action });
+  } else {
+    document.execCommand(action === 'selectAll' ? 'selectAll' : action);
+  }
+}
+
+function toolbarItemVisible(item) {
+  return TOOLBAR_BUILTIN.has(item.id) ? !toolbarHidden.has(item.id) : toolbarExtra.includes(item.id);
+}
+
+function runToolbarItem(item, el) {
+  if (item.run) item.run(el);
+  else if (item.cmd) runCommand(item.cmd, item.arg);
+}
+
+function tidyToolbarSeparators() {
+  const toolbar = document.getElementById('toolbar');
+  const children = [...toolbar.children];
+  const visible = (el) => !el.classList.contains('tb-hidden') && !el.classList.contains('toolbar-separator') && el.id !== 'toolbar-collapse';
+  let seenVisible = false;
+  let lastSep = null;
+  for (const el of children) {
+    if (el.classList.contains('toolbar-separator')) {
+      el.classList.toggle('tb-hidden', !seenVisible);
+      if (seenVisible) { lastSep = el; seenVisible = false; }
+    } else if (visible(el)) {
+      seenVisible = true;
+    }
+  }
+  if (!seenVisible && lastSep) lastSep.classList.add('tb-hidden');
+}
+
+function applyToolbarConfig() {
+  const toolbar = document.getElementById('toolbar');
+  for (const id of TOOLBAR_BUILTIN) {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('tb-hidden', toolbarHidden.has(id));
+  }
+  toolbar.querySelectorAll('.tb-extra, .tb-extra-sep').forEach(el => el.remove());
+
+  const collapse = document.getElementById('toolbar-collapse');
+  const extras = TOOLBAR_ITEMS.filter(i => !TOOLBAR_BUILTIN.has(i.id) && toolbarExtra.includes(i.id));
+  if (extras.length) {
+    const sep = document.createElement('span');
+    sep.className = 'toolbar-separator tb-extra-sep';
+    toolbar.insertBefore(sep, collapse);
+    for (const item of extras) {
+      const btn = document.createElement('button');
+      btn.className = 'tb-extra';
+      btn.dataset.tbId = item.id;
+      btn.textContent = item.label;
+      btn.title = item.title || item.label;
+      btn.addEventListener('click', () => runToolbarItem(item, btn));
+      toolbar.insertBefore(btn, collapse);
+    }
+  }
+  tidyToolbarSeparators();
+
+  toolbar.classList.toggle('collapsed', toolbarCollapsed);
+  document.getElementById('toolbar-grip').classList.toggle('hidden', !toolbarCollapsed);
+}
+
+function toggleToolbar() {
+  toolbarCollapsed = !toolbarCollapsed;
+  applyToolbarConfig();
+}
+
+function toolbarItemForElement(el) {
+  const target = el.closest('[data-tb-id], #toolbar > *');
+  if (!target) return null;
+  const id = target.dataset.tbId || target.id;
+  const wrap = target.closest('#font-group, #bg-group, #bg-presets');
+  const wrapId = wrap ? wrap.id : null;
+  return TOOLBAR_ITEMS.find(i => i.id === id || i.id === wrapId) || null;
+}
+
+function hideToolbarItem(item) {
+  if (TOOLBAR_BUILTIN.has(item.id)) toolbarHidden.add(item.id);
+  else toolbarExtra = toolbarExtra.filter(id => id !== item.id);
+  applyToolbarConfig();
+}
+
+function showToolbarContextMenu(e) {
+  e.preventDefault();
+  const item = toolbarItemForElement(e.target);
+  const items = [];
+  if (item) items.push([`Hide "${item.label}"`, () => hideToolbarItem(item)]);
+  items.push(['Customize Toolbar...', showToolbarDialog]);
+  items.push(['Hide Toolbar', toggleToolbar]);
+  showPopupMenu(e.clientX, e.clientY, items);
+}
+
+function showToolbarDialog() {
+  const container = document.getElementById('toolbar-groups');
+  container.innerHTML = '';
+  for (const group of TOOLBAR_CATALOG) {
+    const box = document.createElement('div');
+    box.className = 'tb-group';
+    const h = document.createElement('h4');
+    h.textContent = group.group;
+    box.appendChild(h);
+    for (const item of group.items) {
+      const label = document.createElement('label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = toolbarItemVisible(item);
+      cb.addEventListener('change', () => {
+        if (TOOLBAR_BUILTIN.has(item.id)) {
+          if (cb.checked) toolbarHidden.delete(item.id); else toolbarHidden.add(item.id);
+        } else if (cb.checked) {
+          if (!toolbarExtra.includes(item.id)) toolbarExtra.push(item.id);
+        } else {
+          toolbarExtra = toolbarExtra.filter(id => id !== item.id);
+        }
+        applyToolbarConfig();
+      });
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(' ' + (item.title && item.title !== item.label ? `${item.label} (${item.title})` : item.label)));
+      box.appendChild(label);
+    }
+    container.appendChild(box);
+  }
+  document.getElementById('toolbar-dialog').classList.remove('hidden');
+}
+
+function hideToolbarDialog() {
+  document.getElementById('toolbar-dialog').classList.add('hidden');
+}
+
+function initToolbarCustomization() {
+  const toolbar = document.getElementById('toolbar');
+  toolbar.addEventListener('contextmenu', showToolbarContextMenu);
+  document.getElementById('toolbar-collapse').addEventListener('click', toggleToolbar);
+  document.getElementById('toolbar-grip').addEventListener('click', toggleToolbar);
+  document.getElementById('toolbar-done').addEventListener('click', hideToolbarDialog);
+  document.getElementById('toolbar-reset').addEventListener('click', () => {
+    toolbarHidden = new Set();
+    toolbarExtra = [];
+    applyToolbarConfig();
+    showToolbarDialog();
+  });
+  document.getElementById('toolbar-dialog').addEventListener('click', (e) => {
+    if (e.target.classList.contains('dialog-overlay')) hideToolbarDialog();
+  });
+  document.getElementById('toolbar-dialog').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideToolbarDialog();
+  });
+  applyToolbarConfig();
+}
+
+// Link map
+let linkMapOpen = false;
+let linkGraph = null;
+let linkMapCenter = null;
+let linkMapOrder = [];
+let linkMapHover = null;
+
+function normPath(p) {
+  return p ? p.replace(/\\/g, '/') : p;
+}
+
+function linkMapVisible() {
+  return linkMapOpen;
+}
+
+async function openLinkMap() {
+  const overlay = document.getElementById('link-map');
+  if (!currentFolderPath) {
+    overlay.classList.remove('hidden');
+    linkMapOpen = true;
+    document.getElementById('btn-link-map').classList.add('active');
+    document.getElementById('link-map-status').textContent = 'Open a folder first (Open Folder in the sidebar)';
+    document.getElementById('link-map-svg').innerHTML = '';
+    return;
+  }
+  overlay.classList.remove('hidden');
+  linkMapOpen = true;
+  document.getElementById('btn-link-map').classList.add('active');
+  if (!linkGraph) await rescanLinkMap();
+  else renderLinkMap();
+}
+
+function closeLinkMap() {
+  linkMapOpen = false;
+  document.getElementById('link-map').classList.add('hidden');
+  document.getElementById('btn-link-map').classList.remove('active');
+  activeView().focus();
+}
+
+function toggleLinkMap() {
+  if (linkMapOpen) closeLinkMap();
+  else openLinkMap();
+}
+
+async function rescanLinkMap() {
+  if (!window.electronAPI || !window.electronAPI.scanLinks || !currentFolderPath) return;
+  document.getElementById('link-map-status').textContent = 'Scanning...';
+  const result = await window.electronAPI.scanLinks({ dirPath: currentFolderPath });
+  if (!result.success) {
+    document.getElementById('link-map-status').textContent = 'Scan failed: ' + (result.error || 'unknown');
+    return;
+  }
+  linkGraph = buildLinkGraph(result);
+  renderLinkMap();
+}
+
+function buildLinkGraph(result) {
+  const nodes = new Map();
+  for (const f of result.files) {
+    const p = normPath(f);
+    nodes.set(p, { path: p, name: getFileName(p), out: new Set(), in: new Set(), missing: [] });
+  }
+  const edges = new Map();
+  for (const l of result.links) {
+    const from = normPath(l.from);
+    const src = nodes.get(from);
+    if (!src) continue;
+    if (!l.to) {
+      src.missing.push(l.text);
+      continue;
+    }
+    const to = normPath(l.to);
+    if (to === from || !nodes.has(to)) continue;
+    src.out.add(to);
+    nodes.get(to).in.add(from);
+    const key = from < to ? from + '\u0000' + to : to + '\u0000' + from;
+    let e = edges.get(key);
+    if (!e) {
+      e = { a: from < to ? from : to, b: from < to ? to : from, ab: false, ba: false };
+      edges.set(key, e);
+    }
+    if (from === e.a) e.ab = true; else e.ba = true;
+  }
+  return { nodes, edges: [...edges.values()] };
+}
+
+function linkMapCenterPath() {
+  const target = statusTarget();
+  const p = normPath(target.filePath);
+  if (linkGraph && p && linkGraph.nodes.has(p)) return p;
+  return null;
+}
+
+function layoutLinkMap(center, showOrphans) {
+  const { nodes } = linkGraph;
+  const placed = new Map();
+  const neighbors = (p) => {
+    const n = nodes.get(p);
+    return [...new Set([...n.out, ...n.in])];
+  };
+
+  if (center) {
+    const tree = new Map();
+    const ring = new Map([[center, 0]]);
+    const queue = [center];
+    tree.set(center, []);
+    while (queue.length) {
+      const cur = queue.shift();
+      for (const nb of neighbors(cur).sort()) {
+        if (ring.has(nb)) continue;
+        ring.set(nb, ring.get(cur) + 1);
+        tree.get(cur).push(nb);
+        tree.set(nb, []);
+        queue.push(nb);
+      }
+    }
+    const leaves = new Map();
+    const countLeaves = (p) => {
+      const kids = tree.get(p);
+      const c = kids.length ? kids.reduce((s, k) => s + countLeaves(k), 0) : 1;
+      leaves.set(p, c);
+      return c;
+    };
+    countLeaves(center);
+    const assign = (p, a0, a1) => {
+      const kids = tree.get(p);
+      if (!kids.length) return;
+      const total = leaves.get(p);
+      let a = a0;
+      for (const k of kids) {
+        const span = (a1 - a0) * (leaves.get(k) / total);
+        placed.set(k, { ring: ring.get(k), angle: a + span / 2 });
+        assign(k, a, a + span);
+        a += span;
+      }
+    };
+    placed.set(center, { ring: 0, angle: 0 });
+    assign(center, -Math.PI / 2, Math.PI * 1.5);
+  }
+
+  const maxRing = Math.max(0, ...[...placed.values()].map(v => v.ring));
+  if (showOrphans || !center) {
+    const rest = [...nodes.keys()].filter(p => !placed.has(p)).sort();
+    const outer = maxRing + 1;
+    rest.forEach((p, i) => {
+      placed.set(p, { ring: outer, angle: -Math.PI / 2 + (Math.PI * 2 * i) / Math.max(1, rest.length), orphan: true });
+    });
+  }
+  return placed;
+}
+
+function renderLinkMap() {
+  const svg = document.getElementById('link-map-svg');
+  const status = document.getElementById('link-map-status');
+  if (!linkGraph) return;
+
+  const follow = document.getElementById('link-map-follow').checked;
+  const showOrphans = document.getElementById('link-map-orphans').checked;
+  if (follow || !linkMapCenter || !linkGraph.nodes.has(linkMapCenter)) {
+    linkMapCenter = linkMapCenterPath() || linkMapCenter;
+  }
+  if (linkMapCenter && !linkGraph.nodes.has(linkMapCenter)) linkMapCenter = null;
+
+  const placed = layoutLinkMap(linkMapCenter, showOrphans);
+  const rect = svg.getBoundingClientRect();
+  const W = Math.max(200, rect.width);
+  const H = Math.max(200, rect.height);
+  const cx = W / 2;
+  const cy = H / 2;
+  const maxRing = Math.max(1, ...[...placed.values()].map(v => v.ring));
+  const R = Math.min(W, H) / 2 - 70;
+  const radiusFor = (ring) => (ring === 0 ? 0 : (R * ring) / maxRing);
+  const pos = new Map();
+  for (const [p, v] of placed) {
+    const r = radiusFor(v.ring);
+    pos.set(p, { x: cx + r * Math.cos(v.angle), y: cy + r * Math.sin(v.angle), ...v });
+  }
+
+  const nodeCount = placed.size;
+  const linkCount = linkGraph.edges.filter(e => pos.has(e.a) && pos.has(e.b)).length;
+  const missingCount = [...linkGraph.nodes.values()].reduce((s, n) => s + n.missing.length, 0);
+  status.textContent = linkMapCenter
+    ? `${nodeCount} file${nodeCount === 1 ? '' : 's'} within reach, ${linkCount} link${linkCount === 1 ? '' : 's'}${missingCount ? `, ${missingCount} missing target${missingCount === 1 ? '' : 's'}` : ''}`
+    : `Active file is not a .md/.txt in the folder; showing all ${nodeCount} files`;
+
+  const esc = escapeHtml;
+  const parts = [];
+  parts.push(`<defs>
+    <marker id="lm-arrow-one" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="lm-arrow-one"/></marker>
+    <marker id="lm-arrow-two" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="lm-arrow-two"/></marker>
+  </defs>`);
+
+  for (let k = 1; k <= maxRing; k++) {
+    parts.push(`<circle class="lm-ring" cx="${cx}" cy="${cy}" r="${radiusFor(k)}"/>`);
+  }
+
+  const NODE_R = 7;
+  const shorten = (x1, y1, x2, y2, pad) => {
+    const dx = x2 - x1, dy = y2 - y1;
+    const d = Math.hypot(dx, dy) || 1;
+    return [x1 + (dx / d) * pad, y1 + (dy / d) * pad, x2 - (dx / d) * pad, y2 - (dy / d) * pad];
+  };
+
+  for (const e of linkGraph.edges) {
+    const A = pos.get(e.a), B = pos.get(e.b);
+    if (!A || !B) continue;
+    const two = e.ab && e.ba;
+    let from = A, to = B;
+    if (!two && e.ba) { from = B; to = A; }
+    const [x1, y1, x2, y2] = shorten(from.x, from.y, to.x, to.y, NODE_R + 3);
+    const hot = linkMapHover && (e.a === linkMapHover || e.b === linkMapHover);
+    parts.push(`<line class="lm-edge ${two ? 'lm-two' : 'lm-one'}${hot ? ' lm-hot' : ''}" data-a="${esc(e.a)}" data-b="${esc(e.b)}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" marker-end="url(#lm-arrow-${two ? 'two' : 'one'})"${two ? ` marker-start="url(#lm-arrow-two)"` : ''}/>`);
+  }
+
+  for (const [p, v] of pos) {
+    const n = linkGraph.nodes.get(p);
+    if (!n.missing.length) continue;
+    n.missing.forEach((text, i) => {
+      const ang = v.angle + (i + 1) * 0.35 + (v.ring === 0 ? 0 : Math.PI);
+      const len = 42;
+      const x2 = v.x + len * Math.cos(ang), y2 = v.y + len * Math.sin(ang);
+      parts.push(`<line class="lm-edge lm-broken" x1="${v.x}" y1="${v.y}" x2="${x2}" y2="${y2}"/>`);
+      parts.push(`<text class="lm-missing" x="${x2 + 4 * Math.cos(ang)}" y="${y2 + 4 * Math.sin(ang)}" text-anchor="${Math.cos(ang) < 0 ? 'end' : 'start'}">${esc(text)}?</text>`);
     });
   }
 
-  addDropTarget(editorEl, (filePath) => {
-    openFileFromPath(filePath);
-  });
+  for (const [p, v] of pos) {
+    const n = linkGraph.nodes.get(p);
+    const isCenter = p === linkMapCenter;
+    const hot = linkMapHover === p || (linkMapHover && (n.out.has(linkMapHover) || n.in.has(linkMapHover)));
+    const cls = ['lm-node', isCenter ? 'lm-center' : '', v.orphan ? 'lm-orphan' : '', hot ? 'lm-hot' : '', linkMapHover === p ? 'lm-focus' : ''].filter(Boolean).join(' ');
+    const label = n.name.replace(/\.(md|markdown|txt)$/i, '');
+    const labelSide = v.ring === 0 ? 'middle' : (Math.cos(v.angle) < -0.2 ? 'end' : Math.cos(v.angle) > 0.2 ? 'start' : 'middle');
+    const lx = v.ring === 0 ? v.x : v.x + 12 * Math.cos(v.angle);
+    const ly = v.ring === 0 ? v.y + 22 : v.y + 12 * Math.sin(v.angle) + 4;
+    parts.push(`<g class="${cls}" data-path="${esc(p)}"><circle cx="${v.x}" cy="${v.y}" r="${isCenter ? NODE_R + 4 : NODE_R}"/><text x="${lx}" y="${ly}" text-anchor="${labelSide}">${esc(label)}</text><title>${esc(p)}\n${n.out.size} out, ${n.in.size} in${n.missing.length ? `, ${n.missing.length} missing` : ''}</title></g>`);
+  }
 
-  addDropTarget(splitEl, (filePath) => {
-    loadFileIntoSplitPane(filePath);
-  });
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = parts.join('');
 
-  addDropTarget(proseEl, async (filePath) => {
-    if (!window.electronAPI) return;
-    const result = await window.electronAPI.readFile({ filePath });
-    if (result.success) {
-      proseEl.value = result.content;
+  linkMapOrder = Array.from(pos.keys());
+
+  svg.querySelectorAll('.lm-node').forEach(g => {
+    const p = g.dataset.path;
+    g.addEventListener('mouseenter', () => { linkMapHover = p; renderLinkMap(); });
+    g.addEventListener('mouseleave', () => { linkMapHover = null; renderLinkMap(); });
+    g.addEventListener('click', (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        linkMapCenter = p;
+        document.getElementById('link-map-follow').checked = false;
+        renderLinkMap();
+      } else {
+        closeLinkMap();
+        openFileFromPath(p);
+      }
+    });
+  });
+}
+
+function initLinkMap() {
+  document.getElementById('btn-link-map').addEventListener('click', toggleLinkMap);
+  document.getElementById('link-map-close').addEventListener('click', closeLinkMap);
+  document.getElementById('link-map-refresh').addEventListener('click', rescanLinkMap);
+  document.getElementById('link-map-orphans').addEventListener('change', renderLinkMap);
+  document.getElementById('link-map-follow').addEventListener('change', renderLinkMap);
+  document.addEventListener('keydown', (e) => {
+    if (!linkMapOpen) return;
+    if (e.key === 'Escape') { closeLinkMap(); return; }
+    if (e.target && e.target.tagName === 'INPUT' && e.target.type === 'text') return;
+    // Tab / arrows walk the nodes, Enter opens, Ctrl+Enter re-centers.
+    const step = (e.key === 'Tab' && !e.shiftKey) || e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1
+      : (e.key === 'Tab' && e.shiftKey) || e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+    if (step && linkMapOrder.length) {
+      e.preventDefault();
+      const cur = linkMapOrder.indexOf(linkMapHover);
+      linkMapHover = linkMapOrder[(cur + step + linkMapOrder.length) % linkMapOrder.length];
+      renderLinkMap();
+      return;
+    }
+    if (e.key === 'Enter' && linkMapHover && linkGraph && linkGraph.nodes.has(linkMapHover)) {
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) {
+        linkMapCenter = linkMapHover;
+        document.getElementById('link-map-follow').checked = false;
+        renderLinkMap();
+      } else {
+        const p = linkMapHover;
+        closeLinkMap();
+        openFileFromPath(p);
+      }
     }
   });
+  window.addEventListener('resize', () => { if (linkMapOpen) renderLinkMap(); });
+}
+
+// Keyboard navigation for the sidebar lists and result panels.
+// Each list container is focusable; arrows move a highlight, Enter
+// activates (same as a click), Left/Right fold tree folders, Escape
+// returns to the editor. F6 cycles focus between panes.
+const KEYBOARD_LISTS = [
+  ['file-tree-content', '.tree-item'],
+  ['recent-files-content', '.recent-item'],
+  ['function-list-content', '.fn-item'],
+  ['search-results-list', '.sr-file, .sr-match'],
+  ['closer-results', '.grammar-item'],
+  ['grammar-results', '.grammar-item'],
+];
+
+function visibleListItems(container, selector) {
+  return Array.from(container.querySelectorAll(selector)).filter(el => el.offsetParent !== null);
+}
+
+function setListActive(container, item) {
+  container.querySelectorAll('.kb-active').forEach(el => el.classList.remove('kb-active'));
+  if (item) {
+    item.classList.add('kb-active');
+    item.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function ensureListActive(container) {
+  const entry = KEYBOARD_LISTS.find(([id]) => id === container.id);
+  if (!entry) return;
+  const items = visibleListItems(container, entry[1]);
+  const current = container.querySelector('.kb-active');
+  if (!current || !items.includes(current)) setListActive(container, items[0] || null);
+}
+
+function focusKeyboardList(container) {
+  container.focus({ preventScroll: true });
+  ensureListActive(container);
+}
+
+// Lists re-render asynchronously; keep a highlighted row once they do.
+function listRendered(containerId) {
+  const container = document.getElementById(containerId);
+  if (container && document.activeElement === container) ensureListActive(container);
+}
+
+function initKeyboardLists() {
+  for (const [id, selector] of KEYBOARD_LISTS) {
+    const container = document.getElementById(id);
+    if (!container) continue;
+    container.tabIndex = 0;
+    container.addEventListener('click', (e) => {
+      const item = e.target.closest(selector);
+      if (item && container.contains(item)) setListActive(container, item);
+    });
+    container.addEventListener('keydown', (e) => {
+      const items = visibleListItems(container, selector);
+      if (!items.length) { if (e.key === 'Escape') { e.preventDefault(); focusEditorPane(); } return; }
+      let idx = items.indexOf(container.querySelector('.kb-active'));
+      const move = (n) => { e.preventDefault(); setListActive(container, items[Math.max(0, Math.min(items.length - 1, n))]); };
+      switch (e.key) {
+        case 'ArrowDown': move(idx + 1); break;
+        case 'ArrowUp': move(idx < 0 ? 0 : idx - 1); break;
+        case 'Home': move(0); break;
+        case 'End': move(items.length - 1); break;
+        case 'PageDown': move(idx + 10); break;
+        case 'PageUp': move(idx - 10); break;
+        case 'Enter':
+        case ' ': {
+          e.preventDefault();
+          const item = items[idx];
+          if (!item) break;
+          const fix = e.shiftKey ? item.querySelector('.grammar-item-fix') : null;
+          if (fix) fix.click(); else item.click();
+          break;
+        }
+        case 'ArrowRight':
+        case 'ArrowLeft': {
+          const item = items[idx];
+          if (!item) break;
+          const icon = item.querySelector('.tree-icon.folder, .sr-toggle');
+          if (!icon) break;
+          e.preventDefault();
+          const next = item.nextElementSibling;
+          const expanded = next && (next.classList.contains('expanded') || (next.classList.contains('sr-matches') && !next.classList.contains('collapsed')));
+          if ((e.key === 'ArrowRight' && !expanded) || (e.key === 'ArrowLeft' && expanded)) item.click();
+          break;
+        }
+        case 'Escape':
+          e.preventDefault();
+          focusEditorPane();
+          break;
+        default:
+          break;
+      }
+    });
+  }
+}
+
+function focusEditorPane() {
+  if (proseMode && focusedPane !== 'right') document.getElementById('prose-editor').focus();
+  else { const v = activeView(); if (v) v.focus(); }
+}
+
+function isShown(el) {
+  return !!el && el.offsetParent !== null;
+}
+
+// Ordered list of focusable panes that are currently on screen.
+function focusTargets() {
+  const targets = [];
+  if (sidebarVisible) {
+    const panel = document.querySelector('.sidebar-panel.active');
+    const content = panel && panel.querySelector('[id$="-content"]');
+    if (isShown(content)) targets.push({ el: content, focus: () => focusKeyboardList(content) });
+  }
+  if (proseMode) {
+    const prose = document.getElementById('prose-editor');
+    targets.push({ el: prose, focus: () => prose.focus() });
+  } else {
+    targets.push({ el: editorView.dom, focus: () => editorView.focus() });
+  }
+  for (const p of openPanes()) {
+    if (isShown(p.view.dom)) targets.push({ el: p.view.dom, focus: () => p.view.focus() });
+  }
+  for (const id of ['grammar-results', 'closer-results', 'search-results-list']) {
+    const el = document.getElementById(id);
+    if (isShown(el)) targets.push({ el, focus: () => focusKeyboardList(el) });
+  }
+  return targets;
+}
+
+function cycleFocus(dir) {
+  const targets = focusTargets();
+  if (!targets.length) return;
+  const active = document.activeElement;
+  let idx = targets.findIndex(t => t.el === active || t.el.contains(active));
+  if (idx < 0) idx = dir > 0 ? -1 : 0;
+  targets[(idx + dir + targets.length) % targets.length].focus();
+}
+
+// F4 / Shift+F4: step through Find in Files hits (or closer results when
+// that panel is the one open) and open each one.
+function stepSearchResult(dir) {
+  let container = document.getElementById('search-results-list');
+  let selector = '.sr-match';
+  if (!isShown(container)) {
+    container = document.getElementById('closer-results');
+    selector = '.grammar-item';
+    if (!isShown(container)) return;
+  }
+  const items = visibleListItems(container, selector);
+  if (!items.length) return;
+  const idx = items.indexOf(container.querySelector('.kb-active'));
+  const next = items[(idx + dir + items.length) % items.length];
+  setListActive(container, next);
+  next.click();
+}
+
+function initKeyboardNavigation() {
+  initKeyboardLists();
+}
+
+// Find in Files
+function showFindInFiles() {
+  const dialog = document.getElementById('find-files-dialog');
+  const query = document.getElementById('fif-query');
+  const dirInput = document.getElementById('fif-dir');
+  const view = activeView();
+  const sel = view ? view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to) : '';
+  if (sel && !sel.includes('\n')) query.value = sel;
+  if (!dirInput.value) dirInput.value = defaultSearchDir();
+  dialog.classList.remove('hidden');
+  query.focus();
+  query.select();
+}
+
+function hideFindInFiles() {
+  document.getElementById('find-files-dialog').classList.add('hidden');
+}
+
+function defaultSearchDir() {
+  if (currentFolderPath) return currentFolderPath;
+  const p = currentFilePath();
+  if (p) return p.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+  return '';
+}
+
+async function runFindInFiles() {
+  if (!window.electronAPI || !window.electronAPI.findInFiles) return;
+  const opts = {
+    query: document.getElementById('fif-query').value,
+    filters: document.getElementById('fif-filters').value,
+    dir: document.getElementById('fif-dir').value.trim(),
+    matchCase: document.getElementById('fif-case').checked,
+    wholeWord: document.getElementById('fif-word').checked,
+    regex: document.getElementById('fif-regex').checked,
+    subfolders: document.getElementById('fif-sub').checked,
+  };
+  if (!opts.query || !opts.dir) return;
+  hideFindInFiles();
+
+  const panel = document.getElementById('search-results');
+  const title = document.getElementById('search-results-title');
+  const list = document.getElementById('search-results-list');
+  panel.classList.remove('hidden');
+  title.textContent = `Searching for "${opts.query}"...`;
+  list.innerHTML = '';
+
+  const result = await window.electronAPI.findInFiles(opts);
+  if (!result.success) {
+    title.textContent = 'Search failed';
+    list.innerHTML = `<div class="sr-empty">${escapeHtml(result.error || 'Unknown error')}</div>`;
+    return;
+  }
+  renderSearchResults(opts.query, result);
+}
+
+function renderSearchResults(query, result) {
+  const title = document.getElementById('search-results-title');
+  const list = document.getElementById('search-results-list');
+  const fileCount = result.results.length;
+  title.textContent = `"${query}": ${result.total} hit${result.total === 1 ? '' : 's'} in ${fileCount} file${fileCount === 1 ? '' : 's'} (${result.filesSearched} searched)${result.truncated ? ', list truncated' : ''}`;
+  list.innerHTML = '';
+  if (!fileCount) {
+    list.innerHTML = '<div class="sr-empty">No matches found.</div>';
+    return;
+  }
+  for (const file of result.results) {
+    const header = document.createElement('div');
+    header.className = 'sr-file';
+    header.innerHTML = `<span class="sr-toggle">&#9660;</span><span class="sr-path">${escapeHtml(file.filePath)}</span><span class="sr-count">${file.matches.length}</span>`;
+    const body = document.createElement('div');
+    body.className = 'sr-matches';
+    header.addEventListener('click', () => {
+      const collapsed = body.classList.toggle('collapsed');
+      header.querySelector('.sr-toggle').innerHTML = collapsed ? '&#9654;' : '&#9660;';
+    });
+    for (const m of file.matches) {
+      const row = document.createElement('div');
+      row.className = 'sr-match';
+      row.innerHTML = `<span class="sr-line">Line ${m.line}:</span><span class="sr-text">${escapeHtml(m.text.trim())}</span>`;
+      row.addEventListener('click', () => openFileAtLine(file.filePath, m.line, m.col));
+      body.appendChild(row);
+    }
+    list.appendChild(header);
+    list.appendChild(body);
+  }
+  listRendered('search-results-list');
+}
+
+async function openFileAtLine(filePath, lineNumber, col) {
+  await openFileFromPath(filePath);
+  let view = editorView;
+  if (sp.view && ((sp.mode === 'file' && sp.filePath === filePath)
+      || (sp.mode === 'tab' && tabs.find(t => t.id === sp.tabId && t.filePath === filePath)))) {
+    if (focusedPane === 'right') view = sp.view;
+  }
+  const doc = view.state.doc;
+  const line = doc.line(Math.min(Math.max(1, lineNumber), doc.lines));
+  const pos = Math.min(line.from + Math.max(0, (col || 1) - 1), line.to);
+  view.dispatch({
+    selection: { anchor: pos },
+    effects: EditorView.scrollIntoView(pos, { y: 'center' }),
+  });
+  view.focus();
+}
+
+function initFindInFiles() {
+  document.getElementById('fif-ok').addEventListener('click', runFindInFiles);
+  document.getElementById('fif-cancel').addEventListener('click', hideFindInFiles);
+  document.getElementById('fif-use-current').addEventListener('click', () => {
+    document.getElementById('fif-dir').value = defaultSearchDir();
+  });
+  document.getElementById('find-files-dialog').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type === 'text') runFindInFiles();
+    if (e.key === 'Escape') hideFindInFiles();
+  });
+  document.getElementById('find-files-dialog').addEventListener('click', (e) => {
+    if (e.target.classList.contains('dialog-overlay')) hideFindInFiles();
+  });
+  document.getElementById('search-results-close').addEventListener('click', () => {
+    document.getElementById('search-results').classList.add('hidden');
+  });
+  document.getElementById('status-encoding').addEventListener('click', (e) => showEncodingMenu(e.currentTarget));
+  document.getElementById('status-eol').addEventListener('click', (e) => showEolMenu(e.currentTarget));
+  document.getElementById('status-lang').addEventListener('click', (e) => showLanguageMenu(e.currentTarget));
+  if (window.electronAPI && window.electronAPI.setLanguageList) {
+    window.electronAPI.setLanguageList(languageMenuList());
+  }
+}
+
+function initTabShortcuts() {
+  document.addEventListener('keydown', (e) => {
+    if ((e.key === 'F10' && e.shiftKey) || e.key === 'ContextMenu') {
+      e.preventDefault();
+      openKeyboardContextMenu();
+      return;
+    }
+    if (!e.ctrlKey || e.altKey || e.metaKey) return;
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      tabCommand(e.shiftKey ? 'prev' : 'next');
+    } else if (e.key === 'PageDown') {
+      e.preventDefault();
+      tabCommand(e.shiftKey ? 'move-forward' : 'next');
+    } else if (e.key === 'PageUp') {
+      e.preventDefault();
+      tabCommand(e.shiftKey ? 'move-backward' : 'prev');
+    }
+  }, true);
 }
 
 function wireEvents() {
@@ -1875,42 +5374,22 @@ function wireEvents() {
   document.getElementById('btn-save').addEventListener('click', () => saveCurrentFile());
   document.getElementById('btn-save-as').addEventListener('click', () => saveCurrentFileAs());
 
-  const toggleWrap = () => {
-    wordWrap = !wordWrap;
-    const wrapExt = wordWrap ? EditorView.lineWrapping : [];
-    editorView.dispatch({
-      effects: wrapCompartment.reconfigure(wrapExt),
-    });
-    if (splitEditorView) {
-      splitEditorView.dispatch({
-        effects: splitWrapCompartment.reconfigure(wrapExt),
-      });
-    }
-    const proseEl = document.getElementById('prose-editor');
-    if (wordWrap) {
-      proseEl.style.whiteSpace = 'pre-wrap';
-      proseEl.style.overflowWrap = 'break-word';
-    } else {
-      proseEl.style.whiteSpace = 'pre';
-      proseEl.style.overflowWrap = '';
-    }
-    document.getElementById('btn-wrap').classList.toggle('active', wordWrap);
-  };
-  document.getElementById('btn-wrap').addEventListener('click', toggleWrap);
+  document.getElementById('btn-wrap').addEventListener('click', toggleWordWrap);
 
-  document.getElementById('btn-find').addEventListener('click', () => {
-    openSearchPanel(editorView);
-  });
-  document.getElementById('btn-replace').addEventListener('click', () => {
-    openSearchPanel(editorView);
-  });
+  document.getElementById('btn-find').addEventListener('click', openFind);
+  document.getElementById('btn-replace').addEventListener('click', openFind);
   document.getElementById('btn-goto').addEventListener('click', showGotoLineDialog);
   document.getElementById('btn-fold-all').addEventListener('click', () => {
-    foldAll(editorView);
+    foldAll(activeView());
   });
   document.getElementById('btn-unfold-all').addEventListener('click', () => {
-    unfoldAll(editorView);
+    unfoldAll(activeView());
   });
+  document.getElementById('btn-grammar').addEventListener('click', runGrammarCheck);
+  document.getElementById('grammar-close').addEventListener('click', closeGrammarPanel);
+  document.getElementById('btn-closers').addEventListener('click', runCloserCheck);
+  document.getElementById('closer-close').addEventListener('click', closeCloserPanel);
+  document.getElementById('closer-rerun').addEventListener('click', runCloserCheck);
   document.getElementById('btn-minimap').addEventListener('click', toggleMinimap);
   document.getElementById('btn-sidebar-toggle').addEventListener('click', toggleSidebar);
 
@@ -1942,12 +5421,19 @@ function wireEvents() {
 
   document.getElementById('prose-editor').addEventListener('focus', () => {
     focusedPane = 'prose';
+    updateStatusBar();
   });
   document.getElementById('editor').addEventListener('focusin', () => {
     focusedPane = 'left';
+    updateStatusBar();
   });
-  document.getElementById('editor-split').addEventListener('focusin', () => {
-    focusedPane = 'right';
+  PANE_SLOTS.forEach((id, i) => {
+    document.getElementById(id).addEventListener('focusin', () => {
+      focusedPane = 'right';
+      focusedExtra = i;
+      updateStatusBar();
+      scheduleFunctionListRefresh();
+    });
   });
 
   document.getElementById('btn-compare').addEventListener('click', openCompare);
@@ -1958,10 +5444,18 @@ function wireEvents() {
   });
 
   if (window.electronAPI) {
-    window.electronAPI.onFileOpened(({ filePath, content }) => {
+    window.electronAPI.onFileOpened(({ filePath, content, encoding }) => {
       if (pendingCompare) {
         pendingCompare = false;
         startCompare(filePath, content);
+        return;
+      }
+      if (focusedPane === 'right' && splitView && sp.mode !== 'compare') {
+        openFileInRightPane(filePath);
+        return;
+      }
+      if (sp.mode === 'file' && sp.filePath === filePath) {
+        adoptSplitFileAsTab();
         return;
       }
       const existing = tabs.find(t => t.filePath === filePath);
@@ -1969,34 +5463,46 @@ function wireEvents() {
         switchToTab(existing.id);
         return;
       }
-      createTab(filePath, content);
+      createTab(filePath, content, { encoding });
     });
 
     window.electronAPI.onFolderOpened(({ folderPath }) => {
       loadFolderTree(folderPath);
     });
 
-    window.electronAPI.onMenuNew(() => createTab(null, ''));
-    window.electronAPI.onMenuSave(() => saveCurrentFile());
-    window.electronAPI.onMenuSaveAs(() => saveCurrentFileAs());
-    window.electronAPI.onMenuFind(() => openSearchPanel(editorView));
-    window.electronAPI.onMenuReplace(() => openSearchPanel(editorView));
-    window.electronAPI.onMenuGotoLine(showGotoLineDialog);
-    window.electronAPI.onMenuToggleWrap(toggleWrap);
-    window.electronAPI.onMenuToggleSidebar(toggleSidebar);
-    window.electronAPI.onMenuToggleMinimap(toggleMinimap);
-    window.electronAPI.onMenuFoldAll(() => foldAll(editorView));
-    window.electronAPI.onMenuUnfoldAll(() => unfoldAll(editorView));
-    window.electronAPI.onMenuZoomIn(() => setFontSize(fontSize + 2));
-    window.electronAPI.onMenuZoomOut(() => setFontSize(fontSize - 2));
-    window.electronAPI.onMenuZoomReset(() => setFontSize(14));
-    window.electronAPI.onMenuTransform((type) => transformText(type));
-    window.electronAPI.onMenuLineOp((type) => lineOperation(type));
-    window.electronAPI.onMenuToggleSplit(toggleSplitView);
-    window.electronAPI.onMenuToggleTheme(toggleTheme);
+    window.electronAPI.onMenuCommand((name, arg) => runCommand(name, arg));
+    if (window.electronAPI.onMenuTemplate) {
+      window.electronAPI.onMenuTemplate((items) => setMenuItems(items));
+    }
 
     window.electronAPI.onRestoreSession((session) => {
       restoreSession(session);
+    });
+
+    window.electronAPI.onRequestClose(async () => {
+      const dirtyTabs = tabs.filter(t => t.modified);
+      const dirtyPanes = compareMode ? [] : openPanes().filter(p => p.mode === 'file' && p.modified && p.filePath);
+      const count = dirtyTabs.length + dirtyPanes.length;
+
+      if (count > 0) {
+        const choice = await confirmDiscard(
+          count === 1
+            ? `Save changes to ${getFileName(dirtyTabs[0] ? dirtyTabs[0].filePath : dirtyPanes[0].filePath)}?`
+            : `Save changes to ${count} files?`
+        );
+        if (choice === 2) return;
+        if (choice === 0) {
+          for (const tab of dirtyTabs) {
+            if (!(await saveTab(tab))) return;
+          }
+          for (const p of dirtyPanes) {
+            if (!(await saveSplitFile({}, p))) return;
+          }
+        }
+      }
+
+      window.electronAPI.saveSession(getSessionState());
+      window.electronAPI.closeConfirmed();
     });
   }
 
@@ -2008,14 +5514,236 @@ function wireEvents() {
   });
 }
 
+// Command palette and shortcut reference. The main process sends the
+// flattened menu (label, path, command, arg, accelerator) whenever it
+// rebuilds; editor-level bindings and pane commands are added here.
+let menuItems = [];
+
+const EDITOR_BINDINGS = [
+  ['Select next occurrence of selection', 'Ctrl+D'],
+  ['Select all occurrences of selection', 'Ctrl+Shift+L'],
+  ['Select line', 'Alt+L'],
+  ['Select enclosing syntax', 'Ctrl+I'],
+  ['Add cursor above / below', 'Ctrl+Alt+Up / Down'],
+  ['Copy line up / down', 'Shift+Alt+Up / Down'],
+  ['Indent less / more', 'Ctrl+[ / Ctrl+]'],
+  ['Fold / unfold at cursor', 'Ctrl+Alt+[ / Ctrl+Alt+]'],
+  ['Jump to matching bracket', 'Ctrl+Shift+\\'],
+  ['Find next / previous', 'F3 / Shift+F3'],
+  ['Autocomplete', 'Ctrl+Space'],
+  ['Insert blank line below', 'Ctrl+Enter'],
+  ['Column (rectangular) selection', 'Alt + drag'],
+  ['Multiple cursors', 'Ctrl + click'],
+  ['Open context menu at caret', 'Shift+F10 or Menu key'],
+  ['Lists and panels: move, activate, fold, back to editor', 'Arrows, Enter, Left / Right, Escape'],
+  ['Grammar or closer item: apply its fix', 'Shift+Enter'],
+  ['Link Map: walk nodes, open, re-center', 'Tab / arrows, Enter, Ctrl+Enter'],
+];
+
+function setMenuItems(items) {
+  menuItems = Array.isArray(items) ? items.filter(i => i && i.label) : [];
+}
+
+function formatAccelerator(acc) {
+  if (!acc) return '';
+  const isMac = navigator.platform.toUpperCase().includes('MAC');
+  return acc
+    .replace(/CmdOrCtrl|CommandOrControl/g, isMac ? 'Cmd' : 'Ctrl')
+    .replace(/\bPlus\b/g, '+')
+    .replace(/\bLeft\b/, 'Left').replace(/\bRight\b/, 'Right');
+}
+
+function paletteEntries() {
+  return menuItems.map(item => ({
+    label: item.label,
+    path: item.path.join(' > '),
+    key: formatAccelerator(item.accelerator),
+    run: () => {
+      if (item.name) runCommand(item.name, item.arg);
+      else if (window.electronAPI && window.electronAPI.runNativeMenuItem) window.electronAPI.runNativeMenuItem(item.native);
+    },
+  }));
+}
+
+function scoreEntry(entry, query) {
+  const hay = (entry.path + ' ' + entry.label).toLowerCase();
+  const label = entry.label.toLowerCase();
+  if (!query) return 1;
+  if (label.startsWith(query)) return 4;
+  if (label.includes(query)) return 3;
+  if (hay.includes(query)) return 2;
+  // Every word of the query appears somewhere, in any order.
+  const words = query.split(/\s+/).filter(Boolean);
+  if (words.length > 1 && words.every(w => hay.includes(w))) return 1;
+  return 0;
+}
+
+let paletteActive = 0;
+let paletteShown = [];
+
+function renderPalette() {
+  const list = document.getElementById('palette-list');
+  const q = document.getElementById('palette-input').value.trim().toLowerCase();
+  paletteShown = paletteEntries()
+    .map(e => ({ e, s: scoreEntry(e, q) }))
+    .filter(x => x.s > 0)
+    .sort((a, b) => b.s - a.s)
+    .map(x => x.e);
+  list.textContent = '';
+  if (!paletteShown.length) {
+    const empty = document.createElement('div');
+    empty.className = 'palette-empty';
+    empty.textContent = menuItems.length ? 'No matching command.' : 'Command list not loaded yet.';
+    list.appendChild(empty);
+    return;
+  }
+  paletteActive = Math.min(paletteActive, paletteShown.length - 1);
+  paletteShown.forEach((entry, i) => {
+    const el = document.createElement('div');
+    el.className = 'palette-item' + (i === paletteActive ? ' active' : '');
+    const path = document.createElement('span');
+    path.className = 'p-path';
+    path.textContent = entry.path;
+    const label = document.createElement('span');
+    label.className = 'p-label';
+    label.textContent = entry.label;
+    const key = document.createElement('span');
+    key.className = 'p-key';
+    key.textContent = entry.key;
+    el.append(path, label, key);
+    el.addEventListener('mousemove', () => { if (paletteActive !== i) { paletteActive = i; renderPalette(); } });
+    el.addEventListener('click', () => runPaletteEntry(i));
+    list.appendChild(el);
+  });
+  const activeEl = list.children[paletteActive];
+  if (activeEl) activeEl.scrollIntoView({ block: 'nearest' });
+}
+
+function runPaletteEntry(i) {
+  const entry = paletteShown[i];
+  hideCommandPalette();
+  if (entry) entry.run();
+}
+
+function showCommandPalette() {
+  const dialog = document.getElementById('palette-dialog');
+  const input = document.getElementById('palette-input');
+  dialog.classList.remove('hidden');
+  input.value = '';
+  paletteActive = 0;
+  renderPalette();
+  input.focus();
+}
+
+function hideCommandPalette() {
+  document.getElementById('palette-dialog').classList.add('hidden');
+  const v = activeView();
+  if (v) v.focus();
+}
+
+function initCommandPalette() {
+  const dialog = document.getElementById('palette-dialog');
+  const input = document.getElementById('palette-input');
+  input.addEventListener('input', () => { paletteActive = 0; renderPalette(); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); paletteActive = Math.min(paletteActive + 1, paletteShown.length - 1); renderPalette(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); paletteActive = Math.max(paletteActive - 1, 0); renderPalette(); }
+    else if (e.key === 'PageDown') { e.preventDefault(); paletteActive = Math.min(paletteActive + 10, paletteShown.length - 1); renderPalette(); }
+    else if (e.key === 'PageUp') { e.preventDefault(); paletteActive = Math.max(paletteActive - 10, 0); renderPalette(); }
+    else if (e.key === 'Enter') { e.preventDefault(); runPaletteEntry(paletteActive); }
+    else if (e.key === 'Escape') { e.preventDefault(); hideCommandPalette(); }
+  });
+  dialog.addEventListener('click', (e) => { if (e.target === dialog) hideCommandPalette(); });
+}
+
+function shortcutRows() {
+  const rows = [];
+  for (const item of menuItems) {
+    if (!item.accelerator) continue;
+    rows.push({ group: item.path[0] || 'Menu', label: [...item.path.slice(1), item.label].join(' > '), key: formatAccelerator(item.accelerator) });
+  }
+  for (const [label, key] of EDITOR_BINDINGS) rows.push({ group: 'Editor', label, key });
+  return rows;
+}
+
+function renderShortcuts() {
+  const list = document.getElementById('shortcuts-list');
+  const q = document.getElementById('shortcuts-filter').value.trim().toLowerCase();
+  list.textContent = '';
+  const rows = shortcutRows().filter(r => !q || (r.group + ' ' + r.label + ' ' + r.key).toLowerCase().includes(q));
+  const groups = new Map();
+  for (const r of rows) { if (!groups.has(r.group)) groups.set(r.group, []); groups.get(r.group).push(r); }
+  if (!rows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'palette-empty';
+    empty.textContent = 'No matching shortcut.';
+    list.appendChild(empty);
+    return;
+  }
+  for (const [group, items] of groups) {
+    const g = document.createElement('div');
+    g.className = 'sc-group';
+    const h = document.createElement('h4');
+    h.textContent = group;
+    g.appendChild(h);
+    for (const r of items) {
+      const row = document.createElement('div');
+      row.className = 'sc-row';
+      const l = document.createElement('span');
+      l.textContent = r.label;
+      const k = document.createElement('span');
+      k.className = 'sc-key';
+      k.textContent = r.key;
+      row.append(l, k);
+      g.appendChild(row);
+    }
+    list.appendChild(g);
+  }
+}
+
+function showShortcutsDialog() {
+  const dialog = document.getElementById('shortcuts-dialog');
+  const input = document.getElementById('shortcuts-filter');
+  dialog.classList.remove('hidden');
+  input.value = '';
+  renderShortcuts();
+  input.focus();
+}
+
+function hideShortcutsDialog() {
+  document.getElementById('shortcuts-dialog').classList.add('hidden');
+  const v = activeView();
+  if (v) v.focus();
+}
+
+function initShortcutsDialog() {
+  const dialog = document.getElementById('shortcuts-dialog');
+  document.getElementById('shortcuts-filter').addEventListener('input', renderShortcuts);
+  document.getElementById('shortcuts-close').addEventListener('click', hideShortcutsDialog);
+  dialog.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); hideShortcutsDialog(); } });
+  dialog.addEventListener('click', (e) => { if (e.target === dialog) hideShortcutsDialog(); });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  initPanes();
   initEditor();
   wireEvents();
+  initCommandPalette();
+  initShortcutsDialog();
+  initKeyboardNavigation();
+  setEditorFont(document.getElementById('font-select').value);
   initSidebarTabs();
   initSidebarResize();
   initSplitGutter();
   initDragAndDrop();
   initGotoLineDialog();
+  initProseFind();
+  initTabShortcuts();
+  initFindInFiles();
+  initRenameDialog();
+  initColumnEditor();
+  initLinkMap();
+  initToolbarCustomization();
   initMinimap();
   loadRecentFiles();
 });

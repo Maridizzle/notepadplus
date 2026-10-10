@@ -29,6 +29,7 @@
     <button id="btn-zoom-in" title="Zoom In (Ctrl+=)">A+</button>
     <button id="btn-zoom-out" title="Zoom Out (Ctrl+-)">A-</button>
     <span class="toolbar-separator"></span>
+    <span id="font-group">
     <label class="toolbar-label" for="font-select">Font:</label>
     <select id="font-select" title="Editor Font">
       <optgroup label="Code Fonts">
@@ -37,7 +38,7 @@
         <option value="'Source Code Pro', monospace">Source Code Pro</option>
         <option value="'Roboto Mono', monospace">Roboto Mono</option>
         <option value="'Ubuntu Mono', monospace">Ubuntu Mono</option>
-        <option value="'Consolas', monospace">Consolas</option>
+        <option value="'Consolas', monospace" selected>Consolas</option>
         <option value="'Cascadia Code', monospace">Cascadia Code</option>
         <option value="'Courier New', monospace">Courier New</option>
       </optgroup>
@@ -67,9 +68,12 @@
         <option value="'Nosifer', cursive">Nosifer</option>
       </optgroup>
     </select>
+    </span>
     <span class="toolbar-separator"></span>
+    <span id="bg-group">
     <label class="toolbar-label" for="bg-color">BG:</label>
     <input type="color" id="bg-color" value="#282c34" title="Editor Background Color">
+    </span>
     <div id="bg-presets" title="Background Color Presets">
       <span class="bg-preset" data-color="#282c34" title="One Dark"></span>
       <span class="bg-preset" data-color="#1e1e1e" title="VS Dark"></span>
@@ -88,9 +92,13 @@
     <button id="btn-prose" title="Toggle Prose Mode for Grammarly">Prose</button>
     <button id="btn-autocap" class="active" title="Auto-capitalize sentence starts as you type">AutoCap</button>
     <button id="btn-grammar" title="Check Grammar (LanguageTool)">Grammar</button>
+    <button id="btn-closers" title="Find missing or extra brackets and quotes">Closers</button>
     <span class="toolbar-separator"></span>
     <button id="btn-compare" title="Compare Files">Compare</button>
+    <button id="btn-link-map" title="Link Map (Ctrl+Shift+M)">Map</button>
+    <button id="toolbar-collapse" title="Hide toolbar (Ctrl+Shift+T). Right-click the toolbar to customize.">&#9650;</button>
   </div>
+  <div id="toolbar-grip" class="hidden" title="Show toolbar (Ctrl+Shift+T)">&#9660;</div>
 
   <div id="tab-bar">
     <div id="tabs-container"></div>
@@ -105,6 +113,7 @@
       <div id="sidebar-tabs">
         <button class="sidebar-tab active" data-panel="file-tree">Files</button>
         <button class="sidebar-tab" data-panel="recent-files">Recent</button>
+        <button class="sidebar-tab" data-panel="function-list">Functions</button>
       </div>
       <div id="file-tree" class="sidebar-panel active">
         <div id="file-tree-content">
@@ -116,6 +125,11 @@
           <div class="sidebar-placeholder">No recent files</div>
         </div>
       </div>
+      <div id="function-list" class="sidebar-panel">
+        <div id="function-list-content">
+          <div class="sidebar-placeholder">No functions found</div>
+        </div>
+      </div>
     </div>
     <div id="sidebar-resize-handle"></div>
     <div id="editor-area">
@@ -123,8 +137,77 @@
       <textarea id="prose-editor" class="hidden" spellcheck="true"></textarea>
       <div class="split-gutter" id="split-gutter"></div>
       <div id="editor-split"></div>
+      <div id="editor-pane-3" class="grid-pane"></div>
+      <div id="editor-pane-4" class="grid-pane"></div>
+      <div id="grid-gutter-v" class="grid-gutter" title="Drag to resize columns"></div>
+      <div id="grid-gutter-h" class="grid-gutter" title="Drag to resize rows"></div>
       <div id="minimap" class="hidden">
         <canvas id="minimap-canvas"></canvas>
+      </div>
+      <div id="link-map" class="hidden">
+        <div id="link-map-header">
+          <span id="link-map-title">LINK MAP</span>
+          <span id="link-map-status"></span>
+          <label class="link-map-opt"><input type="checkbox" id="link-map-orphans"> Orphans</label>
+          <label class="link-map-opt"><input type="checkbox" id="link-map-follow" checked> Follow active tab</label>
+          <button id="link-map-refresh" title="Rescan folder">&#8635;</button>
+          <button id="link-map-close" title="Close (Esc)">&times;</button>
+        </div>
+        <svg id="link-map-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div id="link-map-legend">
+          <span><i class="lm-key lm-key-two"></i> links both ways</span>
+          <span><i class="lm-key lm-key-one"></i> links one way</span>
+          <span><i class="lm-key lm-key-broken"></i> target missing</span>
+          <span>click: open &middot; ctrl+click: center</span>
+        </div>
+      </div>
+    </div>
+    <div id="grammar-panel" class="hidden">
+      <div id="grammar-header">
+        <span>GRAMMAR</span>
+        <span id="grammar-status"></span>
+        <button id="grammar-close" title="Close">&times;</button>
+      </div>
+      <div id="grammar-results"></div>
+    </div>
+    <div id="closer-panel" class="hidden">
+      <div id="closer-header">
+        <span>CLOSERS</span>
+        <span id="closer-status"></span>
+        <button id="closer-rerun" title="Re-check">&#8635;</button>
+        <button id="closer-close" title="Close">&times;</button>
+      </div>
+      <label id="closer-options"><input type="checkbox" id="closer-quotes" checked> Check quotes</label>
+      <div id="closer-results"></div>
+    </div>
+  </div>
+
+  <div id="search-results" class="hidden">
+    <div id="search-results-header">
+      <span id="search-results-title">Search results</span>
+      <button id="search-results-close" title="Close">&times;</button>
+    </div>
+    <div id="search-results-list"></div>
+  </div>
+
+  <div id="find-files-dialog" class="dialog-overlay hidden">
+    <div class="dialog-box dialog-wide">
+      <label for="fif-query">Find in Files</label>
+      <input type="text" id="fif-query" placeholder="Find what">
+      <input type="text" id="fif-filters" placeholder="Filters, e.g. *.js *.md (blank = all files)">
+      <div class="dialog-row">
+        <input type="text" id="fif-dir" placeholder="Directory">
+        <button type="button" id="fif-use-current">Current</button>
+      </div>
+      <div class="dialog-checks">
+        <label><input type="checkbox" id="fif-case"> Match case</label>
+        <label><input type="checkbox" id="fif-word"> Whole word</label>
+        <label><input type="checkbox" id="fif-regex"> Regex</label>
+        <label><input type="checkbox" id="fif-sub" checked> Sub-folders</label>
+      </div>
+      <div class="dialog-buttons">
+        <button id="fif-ok">Find All</button>
+        <button id="fif-cancel">Cancel</button>
       </div>
     </div>
   </div>
@@ -146,6 +229,81 @@
     <button id="prose-find-close" title="Close">&times;</button>
   </div>
 
+  <div id="column-dialog" class="dialog-overlay hidden">
+    <div class="dialog-box dialog-wide">
+      <label>Column Editor</label>
+      <div class="dialog-checks">
+        <label><input type="radio" name="col-mode" value="text" checked> Text to insert</label>
+        <label><input type="radio" name="col-mode" value="number"> Number to insert</label>
+      </div>
+      <div id="col-text-fields">
+        <input type="text" id="col-text" placeholder="Text">
+      </div>
+      <div id="col-number-fields" class="disabled">
+        <div class="dialog-grid">
+          <label for="col-initial">Initial number</label><input type="number" id="col-initial" value="1">
+          <label for="col-step">Increase by</label><input type="number" id="col-step" value="1">
+          <label for="col-repeat">Repeat</label><input type="number" id="col-repeat" value="1" min="1">
+        </div>
+        <div class="dialog-checks">
+          <label><input type="checkbox" id="col-zeros"> Leading zeros</label>
+          <label><input type="radio" name="col-format" value="dec" checked> Dec</label>
+          <label><input type="radio" name="col-format" value="hex"> Hex</label>
+          <label><input type="radio" name="col-format" value="oct"> Oct</label>
+          <label><input type="radio" name="col-format" value="bin"> Bin</label>
+        </div>
+      </div>
+      <div class="dialog-hint">Applies at the caret column from the current line down, to the selected lines, or to each range of a column selection.</div>
+      <div class="dialog-buttons">
+        <button id="col-ok">Insert</button>
+        <button id="col-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toolbar-dialog" class="dialog-overlay hidden">
+    <div class="dialog-box dialog-wide dialog-tall">
+      <label>Customize Toolbar</label>
+      <div class="dialog-hint">Tick anything you want on the toolbar. Every menu command is available; built-in widgets keep their place and added commands appear at the end.</div>
+      <div id="toolbar-groups"></div>
+      <div class="dialog-buttons">
+        <button id="toolbar-reset" type="button" class="dialog-secondary">Reset to Default</button>
+        <button id="toolbar-done">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="palette-dialog" class="dialog-overlay hidden">
+    <div class="dialog-box">
+      <label for="palette-input">Command Palette</label>
+      <input type="text" id="palette-input" placeholder="Type a command name, then Enter" autocomplete="off">
+      <div id="palette-list" class="palette-list"></div>
+      <div class="dialog-hint">Up and Down to choose, Enter to run, Escape to close.</div>
+    </div>
+  </div>
+
+  <div id="shortcuts-dialog" class="dialog-overlay hidden">
+    <div class="dialog-box dialog-tall">
+      <label for="shortcuts-filter">Keyboard Shortcuts</label>
+      <input type="text" id="shortcuts-filter" placeholder="Filter by command or key" autocomplete="off">
+      <div id="shortcuts-list" class="palette-list"></div>
+      <div class="dialog-buttons">
+        <button id="shortcuts-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="rename-dialog" class="dialog-overlay hidden">
+    <div class="dialog-box">
+      <label for="rename-input">Rename:</label>
+      <input type="text" id="rename-input" placeholder="New name">
+      <div class="dialog-buttons">
+        <button id="rename-ok">Rename</button>
+        <button id="rename-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <div id="goto-dialog" class="dialog-overlay hidden">
     <div class="dialog-box">
       <label for="goto-input">Go to Line:</label>
@@ -163,6 +321,7 @@
     <span class="status-spacer"></span>
     <span id="status-lang">Plain Text</span>
     <span id="status-encoding">UTF-8</span>
+    <span id="status-eol">CRLF</span>
     <span id="status-lines"></span>
     <span id="status-selection"></span>
     <span id="status-position">Ln 1, Col 1</span>
