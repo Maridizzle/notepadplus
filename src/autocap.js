@@ -1,10 +1,14 @@
-// Sentence-start auto-capitalization.
+// AutoCap: typo correction and sentence-start auto-capitalization.
 //
-// When a word is finished (space, newline, or punctuation typed after it)
-// and that word begins a sentence, the first letter is uppercased and the
-// second letter is lowercased. "tHis" and "THis" both become "This".
+// When a word is finished (space, newline, or punctuation typed after it):
+//   1. If the word is in the typo list (typos.js) it is replaced, keeping
+//      the case you typed: "teh" -> "the", "Teh" -> "The".
+//   2. If the word begins a sentence, the first letter is uppercased and
+//      the second letter lowercased. "tHis" and "THis" both become "This".
 //
 // Pure functions only. No editor imports, so this file is easy to test.
+
+import TYPOS from './typos.js';
 
 // Characters that end a word. Apostrophes are intentionally NOT boundaries,
 // so "don't" is one word.
@@ -51,6 +55,23 @@ function correctWord(word) {
   return fixed === word ? null : fixed;
 }
 
+// Returns the typo-corrected word, or null when the word is not a listed
+// typo. Only lowercase and Capitalized forms match; ALL CAPS and mixed
+// case are left alone so acronyms survive.
+function correctTypo(word) {
+  if (word.length < 2) return null;
+  const lower = word.toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(TYPOS, lower)) return null;
+
+  const rest = word.slice(1);
+  const isLower = word === lower;
+  const isCapitalized = !isLower && word[0] === word[0].toUpperCase() && rest === rest.toLowerCase();
+  if (!isLower && !isCapitalized) return null;
+
+  const fixed = TYPOS[lower];
+  return isCapitalized ? fixed[0].toUpperCase() + fixed.slice(1) : fixed;
+}
+
 // Given a function that returns text in [from, to) of the document and a
 // cursor position, find the word ending exactly at `pos` and decide whether
 // to fix it. Returns { from, to, insert } or null.
@@ -64,12 +85,14 @@ function computeFix(sliceText, pos) {
 
   const word = text.slice(start);
   const before = text.slice(0, start);
-  if (!isSentenceStart(before)) return null;
 
-  const fixed = correctWord(word);
-  if (fixed === null) return null;
+  let fixed = correctTypo(word) ?? word;
+  if (isSentenceStart(before)) {
+    fixed = correctWord(fixed) ?? fixed;
+  }
+  if (fixed === word) return null;
 
   return { from: windowFrom + start, to: pos, insert: fixed };
 }
 
-export { isTriggerChar, isSentenceStart, correctWord, computeFix };
+export { isTriggerChar, isSentenceStart, correctWord, correctTypo, computeFix };
