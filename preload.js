@@ -29,6 +29,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readDirectory: (data) => ipcRenderer.invoke('read-directory', data),
   getRecentFiles: () => ipcRenderer.invoke('get-recent-files'),
   trackRecentFile: (data) => ipcRenderer.invoke('track-recent-file', data),
+  getLearnedWords: () => ipcRenderer.invoke('get-learned-words'),
+  saveLearnedWords: (words) => ipcRenderer.invoke('save-learned-words', words),
   setTitle: (data) => ipcRenderer.invoke('set-title', data),
   checkGrammar: (data) => ipcRenderer.invoke('check-grammar', data),
   saveSession: (data) => ipcRenderer.send('save-session', data),

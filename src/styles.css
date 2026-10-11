@@ -2225,6 +2225,53 @@ body.dragging-split {
   background: var(--yel-cad);
 }
 
+/* Word suggestion bar for Prose mode (phone-keyboard style) */
+#suggest-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  background:
+    linear-gradient(112deg, var(--yel-cad) 0 12%, transparent 12.2%),
+    var(--white-t);
+  border-top: 3px solid var(--stroke);
+  font-size: 12px;
+  flex-shrink: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+#suggest-bar.hidden {
+  display: none;
+}
+
+#suggest-bar .suggest-label {
+  color: var(--text-secondary);
+  margin-right: 4px;
+}
+
+#suggest-bar button {
+  background: var(--white-t);
+  border: 2px solid var(--stroke);
+  color: var(--text-primary);
+  padding: 2px 10px;
+  border-radius: 0;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  box-shadow: 2px 2px 0 var(--stroke);
+}
+
+#suggest-bar button.first {
+  background: var(--yel-cad);
+  color: var(--text-on-yellow);
+}
+
+#suggest-bar button:hover {
+  background: var(--yel-lemon);
+  color: var(--text-primary);
+}
+
 #prose-editor {
   flex: 1;
   min-width: 0;
