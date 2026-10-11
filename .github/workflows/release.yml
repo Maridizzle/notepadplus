@@ -133,6 +133,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.version || github.ref_name }}
+          # Create the tag on the exact commit that was built. Without this,
+          # GitHub places a new tag on the repository's default branch, which
+          # may not be the branch the workflow ran on.
+          target_commitish: ${{ github.sha }}
           name: NotepadPlus ${{ inputs.version || github.ref_name }}
           files: dist/*
           generate_release_notes: true
