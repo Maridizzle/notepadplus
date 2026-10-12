@@ -1,8 +1,8 @@
 import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, highlightWhitespace, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine, Decoration, ViewPlugin, WidgetType, gutter, GutterMarker } from '@codemirror/view';
-import { EditorState, Compartment, RangeSetBuilder, StateEffect, StateField, RangeSet } from '@codemirror/state';
+import { EditorState, Compartment, RangeSetBuilder, StateEffect, StateField, RangeSet, Prec } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineAndIndent, undo, redo, copyLineDown, moveLineUp, moveLineDown, toggleComment, toggleBlockComment } from '@codemirror/commands';
 import { searchKeymap, highlightSelectionMatches, openSearchPanel, closeSearchPanel } from '@codemirror/search';
-import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
+import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion, closeCompletion, moveCompletionSelection, startCompletion } from '@codemirror/autocomplete';
 import { foldGutter, indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldKeymap, foldAll, unfoldAll, StreamLanguage, syntaxTree, ensureSyntaxTree } from '@codemirror/language';
 import { shell } from '@codemirror/legacy-modes/mode/shell';
 import { powerShell } from '@codemirror/legacy-modes/mode/powershell';
@@ -64,7 +64,8 @@ import { php } from '@codemirror/lang-php';
 import { rust } from '@codemirror/lang-rust';
 import { sql } from '@codemirror/lang-sql';
 import * as Diff from 'diff';
-import { isTriggerChar, computeFix } from './autocap.js';
+import { isTriggerChar, computeFix, wordBefore } from './autocap.js';
+import { MIN_PREFIX, suggest, learnWord, loadLearned, exportLearned, takeLearnedDirty } from './complete.js';
 
 const stream = (mode) => () => StreamLanguage.define(mode);
 
@@ -1161,6 +1162,9 @@ function autoCapFixForState(state, pos) {
 // after a sentence-start word, the word is fixed and the character inserted
 // in a single transaction, so one Ctrl+Z reverts both.
 const autoCapInputHandler = EditorView.inputHandler.of((view, from, to, text) => {
+  if (from === to && isTriggerChar(text)) {
+    learnFinishedWord((a, b) => view.state.sliceDoc(a, b), from);
+  }
   if (!autoCapEnabled || from !== to || !isTriggerChar(text)) return false;
   const fix = autoCapFixForState(view.state, from);
   if (!fix) return false;
@@ -1178,9 +1182,10 @@ const autoCapInputHandler = EditorView.inputHandler.of((view, from, to, text) =>
 const autoCapKeymap = [{
   key: 'Enter',
   run: (view) => {
-    if (!autoCapEnabled) return false;
     const { from, to } = view.state.selection.main;
     if (from !== to) return false;
+    learnFinishedWord((a, b) => view.state.sliceDoc(a, b), from);
+    if (!autoCapEnabled) return false;
     const fix = autoCapFixForState(view.state, from);
     if (!fix) return false;
     view.dispatch({ changes: fix, userEvent: 'input.type' });
@@ -1192,7 +1197,7 @@ const autoCapExtension = [autoCapInputHandler, keymap.of(autoCapKeymap)];
 
 // Same behavior for the plain textarea used in Prose mode.
 function autoCapProseKeydown(e) {
-  if (!autoCapEnabled || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   const isEnter = e.key === 'Enter';
   if (!isEnter && !isTriggerChar(e.key)) return;
 
@@ -1201,6 +1206,9 @@ function autoCapProseKeydown(e) {
   if (pos !== textarea.selectionEnd) return;
 
   const value = textarea.value;
+  learnFinishedWord((from, to) => value.slice(from, to), pos);
+  if (!autoCapEnabled) return;
+
   const fix = computeFix((from, to) => value.slice(from, to), pos);
   if (!fix) return;
 
@@ -1220,6 +1228,145 @@ function autoCapProseKeydown(e) {
 function toggleAutoCap() {
   autoCapEnabled = !autoCapEnabled;
   document.getElementById('btn-autocap').classList.toggle('active', autoCapEnabled);
+}
+
+// Word completion (see complete.js). Learns from the same word-finished
+// hooks AutoCap uses, shows CodeMirror's popup in the editors and a
+// suggestion bar in Prose mode. Tab accepts, Enter never does.
+let completeEnabled = true;
+let learnedSaveTimer = null;
+
+function scheduleLearnedSave() {
+  if (learnedSaveTimer) clearTimeout(learnedSaveTimer);
+  learnedSaveTimer = setTimeout(() => {
+    learnedSaveTimer = null;
+    if (!takeLearnedDirty()) return;
+    if (window.electronAPI && window.electronAPI.saveLearnedWords) {
+      window.electronAPI.saveLearnedWords(exportLearned());
+    }
+  }, 2000);
+}
+
+function learnFinishedWord(sliceText, pos) {
+  learnWord(wordBefore(sliceText, pos));
+  scheduleLearnedSave();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  if (window.electronAPI && window.electronAPI.getLearnedWords) {
+    window.electronAPI.getLearnedWords().then(loadLearned).catch(() => {});
+  }
+});
+
+const wordCompletionSource = (context) => {
+  if (!completeEnabled) return null;
+  const before = context.matchBefore(/[\p{L}'][\p{L}']*$/u);
+  if (!before || before.from === before.to) return null;
+  if (!context.explicit && before.text.length < MIN_PREFIX) return null;
+  const doc = context.state.doc;
+  const words = suggest(before.text, () => doc.toString(), doc);
+  if (words.length === 0) return null;
+  return {
+    from: before.from,
+    options: words.map((label, i) => ({ label, type: 'text', boost: 99 - i })),
+    filter: false,
+  };
+};
+
+const completionTabKeymap = [
+  { key: 'Tab', run: acceptCompletion },
+  { key: 'Escape', run: closeCompletion },
+  { key: 'ArrowDown', run: moveCompletionSelection(true) },
+  { key: 'ArrowUp', run: moveCompletionSelection(false) },
+  { key: 'PageDown', run: moveCompletionSelection(true, 'page') },
+  { key: 'PageUp', run: moveCompletionSelection(false, 'page') },
+  { key: 'Ctrl-Space', run: startCompletion },
+];
+
+const wordCompletionExtension = [
+  EditorState.languageData.of(() => [{ autocomplete: wordCompletionSource }]),
+  Prec.highest(keymap.of(completionTabKeymap)),
+];
+
+function toggleComplete() {
+  completeEnabled = !completeEnabled;
+  document.getElementById('btn-complete').classList.toggle('active', completeEnabled);
+  if (!completeEnabled) {
+    if (editorView) closeCompletion(editorView);
+    if (splitEditorView) closeCompletion(splitEditorView);
+    hideProseSuggestions();
+  }
+}
+
+// Prose mode: a suggestion bar above the status bar instead of a popup.
+let proseSuggestions = [];
+
+function proseWordPrefix(textarea) {
+  const pos = textarea.selectionStart;
+  if (pos !== textarea.selectionEnd) return null;
+  const value = textarea.value;
+  const m = value.slice(Math.max(0, pos - 64), pos).match(/[\p{L}'][\p{L}']*$/u);
+  if (!m || m[0].length < MIN_PREFIX) return null;
+  return { prefix: m[0], from: pos - m[0].length, value };
+}
+
+function hideProseSuggestions() {
+  proseSuggestions = [];
+  const bar = document.getElementById('suggest-bar');
+  bar.classList.add('hidden');
+  bar.querySelectorAll('button').forEach(b => b.remove());
+}
+
+function updateProseSuggestions() {
+  const textarea = document.getElementById('prose-editor');
+  if (!completeEnabled || !proseMode) { hideProseSuggestions(); return; }
+  const found = proseWordPrefix(textarea);
+  const words = found ? suggest(found.prefix, () => found.value, textarea, 5) : [];
+  if (words.length === 0) { hideProseSuggestions(); return; }
+
+  proseSuggestions = words;
+  const bar = document.getElementById('suggest-bar');
+  bar.querySelectorAll('button').forEach(b => b.remove());
+  words.forEach((word, i) => {
+    const btn = document.createElement('button');
+    btn.textContent = word;
+    if (i === 0) btn.classList.add('first');
+    btn.addEventListener('mousedown', (e) => e.preventDefault());
+    btn.addEventListener('click', () => acceptProseSuggestion(i));
+    bar.appendChild(btn);
+  });
+  bar.classList.remove('hidden');
+}
+
+function acceptProseSuggestion(index) {
+  const textarea = document.getElementById('prose-editor');
+  const word = proseSuggestions[index];
+  const found = proseWordPrefix(textarea);
+  if (!word || !found) { hideProseSuggestions(); return; }
+
+  const to = found.from + found.prefix.length;
+  textarea.setSelectionRange(found.from, to);
+  let applied = false;
+  try {
+    applied = document.execCommand('insertText', false, word);
+  } catch (err) {
+    applied = false;
+  }
+  if (!applied) textarea.setRangeText(word, found.from, to, 'end');
+  const end = found.from + word.length;
+  textarea.setSelectionRange(end, end);
+  hideProseSuggestions();
+  textarea.focus();
+}
+
+function proseCompleteKeydown(e) {
+  if (proseSuggestions.length === 0) return;
+  if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+    e.preventDefault();
+    acceptProseSuggestion(0);
+  } else if (e.key === 'Escape') {
+    hideProseSuggestions();
+  }
 }
 
 function getFileExtension(filePath) {
@@ -2411,7 +2558,7 @@ function mainExtensions() {
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
     bracketMatching(),
     closeBrackets(),
-    autocompletion(),
+    autocompletion({ defaultKeymap: false }),
     rectangularSelection(),
     crosshairCursor(),
     highlightActiveLine(),
@@ -2425,13 +2572,13 @@ function mainExtensions() {
     comparePluginLeft,
     themeCompartment.of(isDarkTheme ? oneDark : []),
     autoCapExtension,
+    wordCompletionExtension,
     keymap.of([
       ...closeBracketsKeymap,
       ...defaultKeymap,
       ...searchKeymap,
       ...historyKeymap,
       ...foldKeymap,
-      ...completionKeymap,
       indentWithTab,
     ]),
     EditorView.updateListener.of((update) => {
@@ -2932,6 +3079,7 @@ function toggleProseMode() {
     editorView.focus();
     focusedPane = 'left';
     btn.classList.remove('active');
+    hideProseSuggestions();
   }
 }
 
@@ -3841,7 +3989,7 @@ function createSplitEditor(content, langExt, mode, pane = currentPane()) {
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
     bracketMatching(),
     closeBrackets(),
-    autocompletion(),
+    autocompletion({ defaultKeymap: false }),
     rectangularSelection(),
     crosshairCursor(),
     highlightActiveLine(),
@@ -3864,13 +4012,13 @@ function createSplitEditor(content, langExt, mode, pane = currentPane()) {
     }, { decorations: v => v.decorations }),
     splitThemeCompartment.of(isDarkTheme ? oneDark : []),
     autoCapExtension,
+    wordCompletionExtension,
     keymap.of([
       ...closeBracketsKeymap,
       ...defaultKeymap,
       ...searchKeymap,
       ...historyKeymap,
       ...foldKeymap,
-      ...completionKeymap,
       indentWithTab,
     ]),
     EditorView.domEventHandlers({
@@ -4596,6 +4744,7 @@ const TOOLBAR_CATALOG = [
   { group: 'Tools', items: [
     { id: 'btn-prose', label: 'Prose' },
     { id: 'btn-autocap', label: 'AutoCap' },
+    { id: 'btn-complete', label: 'Complete' },
     { id: 'btn-grammar', label: 'Grammar' },
     { id: 'btn-compare', label: 'Compare' },
     { id: 'command-palette', label: 'Palette', title: 'Command Palette', cmd: 'command-palette' },
@@ -5413,8 +5562,15 @@ function wireEvents() {
 
   document.getElementById('btn-prose').addEventListener('click', toggleProseMode);
   document.getElementById('btn-autocap').addEventListener('click', toggleAutoCap);
+  document.getElementById('btn-complete').addEventListener('click', toggleComplete);
 
+  document.getElementById('prose-editor').addEventListener('keydown', proseCompleteKeydown);
   document.getElementById('prose-editor').addEventListener('keydown', autoCapProseKeydown);
+  document.getElementById('prose-editor').addEventListener('input', updateProseSuggestions);
+  document.getElementById('prose-editor').addEventListener('keyup', (e) => {
+    if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') updateProseSuggestions();
+  });
+  document.getElementById('prose-editor').addEventListener('click', updateProseSuggestions);
   document.getElementById('prose-editor').addEventListener('input', () => {
     markModified();
   });

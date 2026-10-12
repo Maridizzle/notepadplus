@@ -11,6 +11,7 @@ let pendingOpenPaths = [];
 
 const sessionFile = path.join(app.getPath('userData'), 'session.json');
 const recentFile = path.join(app.getPath('userData'), 'recent.json');
+const learnedWordsFile = path.join(app.getPath('userData'), 'learned-words.json');
 
 function loadRecentFiles() {
   try {
@@ -980,6 +981,25 @@ ipcMain.handle('get-recent-files', async () => {
 ipcMain.handle('track-recent-file', async (event, { filePath }) => {
   addRecentFile(filePath);
   return { success: true };
+});
+
+// Word-completion learning data: { word: count }. Stays on this machine.
+ipcMain.handle('get-learned-words', async () => {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(learnedWordsFile, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+});
+
+ipcMain.handle('save-learned-words', async (event, words) => {
+  try {
+    fs.writeFileSync(learnedWordsFile, JSON.stringify(words || {}));
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 });
 
 ipcMain.handle('check-grammar', async (event, { text, language }) => {

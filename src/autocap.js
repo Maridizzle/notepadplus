@@ -72,6 +72,15 @@ function correctTypo(word) {
   return isCapitalized ? fixed[0].toUpperCase() + fixed.slice(1) : fixed;
 }
 
+// The word ending exactly at `pos`, or '' when `pos` is not at a word end.
+function wordBefore(sliceText, pos) {
+  const windowFrom = Math.max(0, pos - LOOKBACK);
+  const text = sliceText(windowFrom, pos);
+  let start = text.length;
+  while (start > 0 && !WORD_BOUNDARY.test(text[start - 1])) start--;
+  return text.slice(start);
+}
+
 // Given a function that returns text in [from, to) of the document and a
 // cursor position, find the word ending exactly at `pos` and decide whether
 // to fix it. Returns { from, to, insert } or null.
@@ -95,4 +104,4 @@ function computeFix(sliceText, pos) {
   return { from: windowFrom + start, to: pos, insert: fixed };
 }
 
-export { isTriggerChar, isSentenceStart, correctWord, correctTypo, computeFix };
+export { isTriggerChar, isSentenceStart, correctWord, correctTypo, computeFix, wordBefore };
