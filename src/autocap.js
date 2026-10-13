@@ -9,6 +9,9 @@
 // Pure functions only. No editor imports, so this file is easy to test.
 
 import TYPOS from './typos.js';
+import NEVER from './never.js';
+
+const NEVER_SET = new Set(NEVER.map(w => w.toLowerCase()));
 
 // Characters that end a word. Apostrophes are intentionally NOT boundaries,
 // so "don't" is one word.
@@ -84,7 +87,10 @@ function wordBefore(sliceText, pos) {
 // Given a function that returns text in [from, to) of the document and a
 // cursor position, find the word ending exactly at `pos` and decide whether
 // to fix it. Returns { from, to, insert } or null.
-function computeFix(sliceText, pos) {
+//
+// opts.prose: true for prose-like text (Prose mode, Plain Text, Markdown,
+// untitled files). Enables the standalone "i" -> "I" rule.
+function computeFix(sliceText, pos, opts = {}) {
   const windowFrom = Math.max(0, pos - LOOKBACK);
   const text = sliceText(windowFrom, pos);
 
@@ -93,9 +99,11 @@ function computeFix(sliceText, pos) {
   if (start === text.length) return null;
 
   const word = text.slice(start);
+  if (NEVER_SET.has(word.toLowerCase())) return null;
   const before = text.slice(0, start);
 
   let fixed = correctTypo(word) ?? word;
+  if (opts.prose && fixed === 'i') fixed = 'I';
   if (isSentenceStart(before)) {
     fixed = correctWord(fixed) ?? fixed;
   }
@@ -104,4 +112,33 @@ function computeFix(sliceText, pos) {
   return { from: windowFrom + start, to: pos, insert: fixed };
 }
 
-export { isTriggerChar, isSentenceStart, correctWord, correctTypo, computeFix, wordBefore };
+// Spacing tidy-up for prose-like text, decided when `typed` is about to be
+// inserted at `pos`:
+//   - punctuation typed after one or more spaces that follow a word:
+//     { kind: 'strip', from } means remove [from, pos) before inserting.
+//   - a second space typed between two words: { kind: 'swallow' } means
+//     insert nothing. Skipped in Markdown, where two trailing spaces are a
+//     line break, and after punctuation, for people who double-space
+//     between sentences.
+// Returns null when nothing should change.
+const PUNCT_AFTER_SPACE = /^[.,;:!?]$/;
+const WORD_END_CHAR = /[\p{L}\p{N}"')\]]/u;
+
+function spacingAction(sliceText, pos, typed, opts = {}) {
+  if (!opts.prose) return null;
+  const text = sliceText(Math.max(0, pos - 64), pos);
+  let spaces = 0;
+  while (spaces < text.length && text[text.length - 1 - spaces] === ' ') spaces++;
+  const prev = text[text.length - 1 - spaces];
+  if (prev === undefined || !WORD_END_CHAR.test(prev)) return null;
+
+  if (PUNCT_AFTER_SPACE.test(typed)) {
+    return spaces > 0 ? { kind: 'strip', from: pos - spaces } : null;
+  }
+  if (typed === ' ' && !opts.markdown && spaces === 1 && /[\p{L}\p{N}]/u.test(prev)) {
+    return { kind: 'swallow' };
+  }
+  return null;
+}
+
+export { isTriggerChar, isSentenceStart, correctWord, correctTypo, computeFix, wordBefore, spacingAction };

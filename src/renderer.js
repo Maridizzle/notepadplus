@@ -3,7 +3,7 @@ import { EditorState, Compartment, RangeSetBuilder, StateEffect, StateField, Ran
 import { defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineAndIndent, undo, redo, copyLineDown, moveLineUp, moveLineDown, toggleComment, toggleBlockComment } from '@codemirror/commands';
 import { searchKeymap, highlightSelectionMatches, openSearchPanel, closeSearchPanel } from '@codemirror/search';
 import { autocompletion, closeBrackets, closeBracketsKeymap, acceptCompletion, closeCompletion, moveCompletionSelection, startCompletion } from '@codemirror/autocomplete';
-import { foldGutter, indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldKeymap, foldAll, unfoldAll, StreamLanguage, syntaxTree, ensureSyntaxTree } from '@codemirror/language';
+import { foldGutter, indentOnInput, syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldKeymap, foldAll, unfoldAll, StreamLanguage, syntaxTree, ensureSyntaxTree, language } from '@codemirror/language';
 import { shell } from '@codemirror/legacy-modes/mode/shell';
 import { powerShell } from '@codemirror/legacy-modes/mode/powershell';
 import { yaml } from '@codemirror/legacy-modes/mode/yaml';
@@ -64,7 +64,7 @@ import { php } from '@codemirror/lang-php';
 import { rust } from '@codemirror/lang-rust';
 import { sql } from '@codemirror/lang-sql';
 import * as Diff from 'diff';
-import { isTriggerChar, computeFix, wordBefore } from './autocap.js';
+import { isTriggerChar, computeFix, wordBefore, spacingAction } from './autocap.js';
 import { MIN_PREFIX, suggest, learnWord, loadLearned, exportLearned, takeLearnedDirty } from './complete.js';
 
 const stream = (mode) => () => StreamLanguage.define(mode);
@@ -1151,78 +1151,204 @@ const wikiLinkPlugin = ViewPlugin.fromClass(class {
   }
 });
 
-// Sentence-start auto-capitalization (see autocap.js for the rules).
+// AutoCap: typo fixes, sentence-start capitalization, the standalone "i"
+// rule, spacing tidy-up, and Backspace-undo (see autocap.js for the rules).
 let autoCapEnabled = true;
 
-function autoCapFixForState(state, pos) {
-  return computeFix((from, to) => state.sliceDoc(from, to), pos);
+// Prose-like text (Plain Text, Markdown, untitled files, Prose mode) gets
+// the extra rules: standalone "i" and spacing tidy-up. Code files do not.
+function proseOptsForState(state) {
+  const lang = state.facet(language);
+  const name = lang ? lang.name : '';
+  return { prose: !lang || name === 'markdown', markdown: name === 'markdown' };
 }
 
-// Fires for typed characters. When a word-ending character is typed right
-// after a sentence-start word, the word is fixed and the character inserted
-// in a single transaction, so one Ctrl+Z reverts both.
+function proseOptsForProseMode() {
+  const tab = getActiveTab();
+  const ext = tab ? getFileExtension(tab.filePath) : '';
+  return { prose: true, markdown: ext === '.md' || ext === '.markdown' };
+}
+
+function autoCapFixForState(state, pos) {
+  return computeFix((from, to) => state.sliceDoc(from, to), pos, proseOptsForState(state));
+}
+
+// The most recent word correction, so one Backspace can restore what was
+// typed. Valid only while the document and cursor are exactly as the
+// correction left them.
+let lastAutoFix = null;
+
+function rememberAutoFix(view, fix, original) {
+  lastAutoFix = {
+    view,
+    doc: view.state.doc,
+    cursor: view.state.selection.main.head,
+    from: fix.from,
+    fixed: fix.insert,
+    original,
+  };
+}
+
+// Fires for typed characters. When a word-ending character is typed, the
+// word before it may be fixed and spaces before punctuation removed, all in
+// one transaction with the typed character, so one Ctrl+Z reverts it all.
 const autoCapInputHandler = EditorView.inputHandler.of((view, from, to, text) => {
-  if (from === to && isTriggerChar(text)) {
-    learnFinishedWord((a, b) => view.state.sliceDoc(a, b), from);
-  }
-  if (!autoCapEnabled || from !== to || !isTriggerChar(text)) return false;
-  const fix = autoCapFixForState(view.state, from);
-  if (!fix) return false;
+  if (from !== to || !isTriggerChar(text)) return false;
+  const slice = (a, b) => view.state.sliceDoc(a, b);
+  const opts = proseOptsForState(view.state);
+
+  const spacing = autoCapEnabled ? spacingAction(slice, from, text, opts) : null;
+  if (spacing && spacing.kind === 'swallow') return true;
+  const wordEnd = spacing ? spacing.from : from;
+
+  learnFinishedWord(slice, wordEnd);
+  if (!autoCapEnabled) return false;
+
+  const fix = computeFix(slice, wordEnd, opts);
+  if (!fix && !spacing) return false;
+
+  const changes = [];
+  if (fix) changes.push(fix);
+  changes.push({ from: wordEnd, to: from, insert: text });
+  const delta = fix ? fix.insert.length - (fix.to - fix.from) : 0;
+  const original = fix ? slice(fix.from, fix.to) : null;
   view.dispatch({
-    changes: [fix, { from, to, insert: text }],
-    selection: { anchor: from + text.length },
+    changes,
+    selection: { anchor: wordEnd + delta + text.length },
     userEvent: 'input.type',
     scrollIntoView: true,
   });
+  if (fix) rememberAutoFix(view, fix, original);
+  else lastAutoFix = null;
   return true;
 });
 
-// Enter is handled by the keymap, not the input handler, so it gets its own
-// binding that fixes the word and then does the normal newline.
-const autoCapKeymap = [{
-  key: 'Enter',
-  run: (view) => {
-    const { from, to } = view.state.selection.main;
-    if (from !== to) return false;
-    learnFinishedWord((a, b) => view.state.sliceDoc(a, b), from);
-    if (!autoCapEnabled) return false;
-    const fix = autoCapFixForState(view.state, from);
-    if (!fix) return false;
-    view.dispatch({ changes: fix, userEvent: 'input.type' });
-    return insertNewlineAndIndent(view);
+const autoCapKeymap = [
+  // Enter is handled by the keymap, not the input handler, so it gets its
+  // own binding that fixes the word and then does the normal newline.
+  {
+    key: 'Enter',
+    run: (view) => {
+      const { from, to } = view.state.selection.main;
+      if (from !== to) return false;
+      const slice = (a, b) => view.state.sliceDoc(a, b);
+      learnFinishedWord(slice, from);
+      if (!autoCapEnabled) return false;
+      const fix = autoCapFixForState(view.state, from);
+      if (!fix) return false;
+      const original = slice(fix.from, fix.to);
+      view.dispatch({ changes: fix, userEvent: 'input.type' });
+      const result = insertNewlineAndIndent(view);
+      rememberAutoFix(view, fix, original);
+      return result;
+    },
   },
-}];
+  // Backspace right after a correction restores the word as typed and keeps
+  // the space, punctuation, or newline that triggered it.
+  {
+    key: 'Backspace',
+    run: (view) => {
+      const f = lastAutoFix;
+      lastAutoFix = null;
+      if (!f || f.view !== view || f.doc !== view.state.doc) return false;
+      const { from, to, head } = view.state.selection.main;
+      if (from !== to || head !== f.cursor) return false;
+      view.dispatch({
+        changes: { from: f.from, to: f.from + f.fixed.length, insert: f.original },
+        selection: { anchor: f.cursor + (f.original.length - f.fixed.length) },
+        userEvent: 'input.type',
+      });
+      return true;
+    },
+  },
+];
 
 const autoCapExtension = [autoCapInputHandler, keymap.of(autoCapKeymap)];
 
-// Same behavior for the plain textarea used in Prose mode.
+// Same behavior for the plain textarea used in Prose mode. Edits go through
+// the browser's own edit command so native undo keeps working.
+let lastProseFix = null;
+let pendingProseFix = null;
+
+function proseInsert(textarea, from, to, insert) {
+  textarea.setSelectionRange(from, to);
+  let applied = false;
+  try {
+    applied = document.execCommand('insertText', false, insert);
+  } catch (err) {
+    applied = false;
+  }
+  if (!applied) textarea.setRangeText(insert, from, to, 'end');
+}
+
 function autoCapProseKeydown(e) {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
-  const isEnter = e.key === 'Enter';
-  if (!isEnter && !isTriggerChar(e.key)) return;
-
   const textarea = e.target;
   const pos = textarea.selectionStart;
   if (pos !== textarea.selectionEnd) return;
 
+  if (e.key === 'Backspace') {
+    const f = lastProseFix;
+    lastProseFix = null;
+    if (!f || f.value !== textarea.value || f.pos !== pos) return;
+    e.preventDefault();
+    proseInsert(textarea, f.from, f.from + f.fixed.length, f.original);
+    const cursor = f.pos + (f.original.length - f.fixed.length);
+    textarea.setSelectionRange(cursor, cursor);
+    return;
+  }
+
+  const isEnter = e.key === 'Enter';
+  if (!isEnter && !isTriggerChar(e.key)) return;
+
   const value = textarea.value;
-  learnFinishedWord((from, to) => value.slice(from, to), pos);
+  const slice = (from, to) => value.slice(from, to);
+  const opts = proseOptsForProseMode();
+
+  const spacing = (autoCapEnabled && !isEnter) ? spacingAction(slice, pos, e.key, opts) : null;
+  if (spacing && spacing.kind === 'swallow') {
+    e.preventDefault();
+    return;
+  }
+  const wordEnd = spacing ? spacing.from : pos;
+
+  learnFinishedWord(slice, wordEnd);
   if (!autoCapEnabled) return;
 
-  const fix = computeFix((from, to) => value.slice(from, to), pos);
-  if (!fix) return;
+  const fix = computeFix(slice, wordEnd, opts);
+  if (!fix && !spacing) return;
 
-  textarea.setSelectionRange(fix.from, fix.to);
-  let applied = false;
-  try {
-    applied = document.execCommand('insertText', false, fix.insert);
-  } catch (err) {
-    applied = false;
+  let original = null;
+  let delta = 0;
+  if (fix) {
+    original = value.slice(fix.from, fix.to);
+    proseInsert(textarea, fix.from, fix.to, fix.insert);
+    delta = fix.insert.length - (fix.to - fix.from);
   }
-  if (!applied) {
-    textarea.setRangeText(fix.insert, fix.from, fix.to, 'end');
+
+  if (spacing) {
+    // Remove the spaces and insert the punctuation ourselves.
+    e.preventDefault();
+    proseInsert(textarea, wordEnd + delta, pos + delta, e.key);
+    const cursor = wordEnd + delta + e.key.length;
+    textarea.setSelectionRange(cursor, cursor);
+    lastProseFix = fix
+      ? { value: textarea.value, pos: cursor, from: fix.from, fixed: fix.insert, original }
+      : null;
+    return;
   }
-  textarea.setSelectionRange(pos, pos);
+
+  // The browser inserts the typed character next; proseAfterInput then
+  // snapshots the result for Backspace-undo.
+  textarea.setSelectionRange(pos + delta, pos + delta);
+  pendingProseFix = fix ? { from: fix.from, fixed: fix.insert, original } : null;
+}
+
+function proseAfterInput() {
+  if (!pendingProseFix) return;
+  const textarea = document.getElementById('prose-editor');
+  lastProseFix = { ...pendingProseFix, value: textarea.value, pos: textarea.selectionStart };
+  pendingProseFix = null;
 }
 
 function toggleAutoCap() {
@@ -5566,6 +5692,7 @@ function wireEvents() {
 
   document.getElementById('prose-editor').addEventListener('keydown', proseCompleteKeydown);
   document.getElementById('prose-editor').addEventListener('keydown', autoCapProseKeydown);
+  document.getElementById('prose-editor').addEventListener('input', proseAfterInput);
   document.getElementById('prose-editor').addEventListener('input', updateProseSuggestions);
   document.getElementById('prose-editor').addEventListener('keyup', (e) => {
     if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') updateProseSuggestions();
