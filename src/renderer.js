@@ -1,4 +1,4 @@
-import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, highlightWhitespace, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine, Decoration, ViewPlugin, WidgetType, gutter, GutterMarker } from '@codemirror/view';
+import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, highlightWhitespace, drawSelection, dropCursor, rectangularSelection, crosshairCursor, highlightActiveLine, Decoration, ViewPlugin, WidgetType, gutter, GutterMarker, scrollPastEnd } from '@codemirror/view';
 import { EditorState, Compartment, RangeSetBuilder, StateEffect, StateField, RangeSet, Prec } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineAndIndent, undo, redo, copyLineDown, moveLineUp, moveLineDown, toggleComment, toggleBlockComment } from '@codemirror/commands';
 import { searchKeymap, highlightSelectionMatches, openSearchPanel, closeSearchPanel } from '@codemirror/search';
@@ -218,6 +218,8 @@ const splitWrapCompartment = new Compartment();
 const splitFontCompartment = new Compartment();
 const whitespaceCompartment = new Compartment();
 const splitWhitespaceCompartment = new Compartment();
+const typewriterCompartment = new Compartment();
+const splitTypewriterCompartment = new Compartment();
 const eolCompartment = new Compartment();
 const splitEolCompartment = new Compartment();
 let showWhitespace = false;
@@ -1419,7 +1421,7 @@ function toggleComplete() {
   document.getElementById('btn-complete').classList.toggle('active', completeEnabled);
   if (!completeEnabled) {
     if (editorView) closeCompletion(editorView);
-    if (splitEditorView) closeCompletion(splitEditorView);
+    for (const p of openPanes()) closeCompletion(p.view);
     hideProseSuggestions();
   }
 }
@@ -1492,6 +1494,104 @@ function proseCompleteKeydown(e) {
     acceptProseSuggestion(0);
   } else if (e.key === 'Escape') {
     hideProseSuggestions();
+  }
+}
+
+// Typewriter scrolling: keep the line being edited vertically centered.
+// Off by default. Covers the main editor, split panes, and Prose mode.
+let typewriterEnabled = false;
+
+function centerCursor(view) {
+  const head = view.state.selection.main.head;
+  view.dispatch({ effects: EditorView.scrollIntoView(head, { y: 'center' }) });
+}
+
+const typewriterListener = EditorView.updateListener.of((update) => {
+  if (!typewriterEnabled) return;
+  const moved = update.docChanged || (update.selectionSet && update.transactions.some(tr =>
+    tr.isUserEvent('input') || tr.isUserEvent('delete') || tr.isUserEvent('move') || tr.isUserEvent('select')));
+  if (!moved) return;
+  const view = update.view;
+  requestAnimationFrame(() => {
+    if (typewriterEnabled && view.dom.isConnected) centerCursor(view);
+  });
+});
+
+function typewriterExt() {
+  return typewriterEnabled ? [typewriterListener, scrollPastEnd()] : [];
+}
+
+// A textarea cannot report where its caret is on screen. A hidden mirror
+// element with the same text metrics and width, filled with the text up to
+// the caret, gives the caret's vertical offset.
+let proseMirror = null;
+const MIRROR_PROPS = [
+  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'lineHeight',
+  'tabSize', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+  'whiteSpace', 'overflowWrap', 'wordBreak', 'textIndent',
+];
+
+function proseCaretOffsetTop(textarea) {
+  if (!proseMirror) {
+    proseMirror = document.createElement('div');
+    proseMirror.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(proseMirror);
+  }
+  const cs = getComputedStyle(textarea);
+  const m = proseMirror.style;
+  m.position = 'absolute';
+  m.top = '0';
+  m.left = '-100000px';
+  m.visibility = 'hidden';
+  m.overflow = 'hidden';
+  m.boxSizing = 'border-box';
+  m.width = textarea.clientWidth + 'px';
+  for (const prop of MIRROR_PROPS) m[prop] = cs[prop];
+
+  proseMirror.textContent = textarea.value.slice(0, textarea.selectionStart);
+  // An inline span would report the top of its text box, not the line box,
+  // which sits half a leading higher. An inline-block pinned to the line
+  // top reports the line box itself.
+  const marker = document.createElement('span');
+  marker.textContent = '​';
+  marker.style.display = 'inline-block';
+  marker.style.verticalAlign = 'top';
+  marker.style.width = '0';
+  if (cs.lineHeight.endsWith('px')) marker.style.height = cs.lineHeight;
+  proseMirror.appendChild(marker);
+  return marker.offsetTop - proseMirror.offsetTop;
+}
+
+function centerProseCaret() {
+  if (!typewriterEnabled || !proseMode) return;
+  const textarea = document.getElementById('prose-editor');
+  const top = proseCaretOffsetTop(textarea);
+  const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 22;
+  textarea.scrollTop = Math.max(0, top - textarea.clientHeight / 2 + lineHeight / 2);
+}
+
+function scheduleProseCenter() {
+  if (!typewriterEnabled || !proseMode) return;
+  requestAnimationFrame(centerProseCaret);
+}
+
+function toggleTypewriter() {
+  typewriterEnabled = !typewriterEnabled;
+  document.getElementById('btn-typewriter').classList.toggle('active', typewriterEnabled);
+
+  editorView.dispatch({ effects: typewriterCompartment.reconfigure(typewriterExt()) });
+  for (const p of openPanes()) {
+    p.view.dispatch({ effects: splitTypewriterCompartment.reconfigure(typewriterExt()) });
+  }
+
+  // Room below the last line so it can sit in the middle too.
+  const textarea = document.getElementById('prose-editor');
+  textarea.style.paddingBottom = typewriterEnabled ? '45vh' : '';
+
+  if (typewriterEnabled) {
+    centerCursor(editorView);
+    for (const p of openPanes()) centerCursor(p.view);
+    scheduleProseCenter();
   }
 }
 
@@ -2692,6 +2792,7 @@ function mainExtensions() {
     wrapCompartment.of(wordWrap ? EditorView.lineWrapping : []),
     fontCompartment.of(paneTheme(currentFontFamily)),
     whitespaceCompartment.of(whitespaceExt()),
+    typewriterCompartment.of(typewriterExt()),
     eolCompartment.of(showEol ? eolMarkerPlugin(mainEolLabel) : []),
     wikiLinkPlugin,
     grammarPlugin,
@@ -4124,6 +4225,7 @@ function createSplitEditor(content, langExt, mode, pane = currentPane()) {
     splitWrapCompartment.of(wordWrap ? EditorView.lineWrapping : []),
     splitFontCompartment.of(paneTheme(currentFontFamily)),
     splitWhitespaceCompartment.of(whitespaceExt()),
+    splitTypewriterCompartment.of(typewriterExt()),
     splitEolCompartment.of(showEol ? eolMarkerPlugin(() => paneEolLabel(pane)) : []),
     wikiLinkPlugin,
     ViewPlugin.fromClass(class {
@@ -4846,6 +4948,7 @@ const TOOLBAR_CATALOG = [
     { id: 'btn-unfold-all', label: 'Unfold All' },
     { id: 'btn-wrap', label: 'Wrap' },
     { id: 'btn-minimap', label: 'Minimap' },
+    { id: 'btn-typewriter', label: 'Typewriter' },
     { id: 'btn-sidebar-toggle', label: 'Sidebar' },
     { id: 'btn-zoom-in', label: 'A+ (zoom in)' },
     { id: 'btn-zoom-out', label: 'A- (zoom out)' },
@@ -5689,6 +5792,15 @@ function wireEvents() {
   document.getElementById('btn-prose').addEventListener('click', toggleProseMode);
   document.getElementById('btn-autocap').addEventListener('click', toggleAutoCap);
   document.getElementById('btn-complete').addEventListener('click', toggleComplete);
+  document.getElementById('btn-typewriter').addEventListener('click', toggleTypewriter);
+
+  document.getElementById('prose-editor').addEventListener('input', scheduleProseCenter);
+  document.getElementById('prose-editor').addEventListener('click', scheduleProseCenter);
+  document.getElementById('prose-editor').addEventListener('keyup', (e) => {
+    if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End' || e.key === 'PageUp' || e.key === 'PageDown') {
+      scheduleProseCenter();
+    }
+  });
 
   document.getElementById('prose-editor').addEventListener('keydown', proseCompleteKeydown);
   document.getElementById('prose-editor').addEventListener('keydown', autoCapProseKeydown);
