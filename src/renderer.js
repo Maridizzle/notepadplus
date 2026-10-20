@@ -5853,20 +5853,47 @@ function toggleLinkMap() {
 async function rescanLinkMap() {
   if (!window.electronAPI || !window.electronAPI.scanLinks || !currentFolderPath) return;
   document.getElementById('link-map-status').textContent = 'Scanning...';
-  const result = await window.electronAPI.scanLinks({ dirPath: currentFolderPath });
+  const result = await window.electronAPI.scanLinks({ dirPath: currentFolderPath, linkFields: LINK_MAP_FIELDS });
   if (!result.success) {
     document.getElementById('link-map-status').textContent = 'Scan failed: ' + (result.error || 'unknown');
     return;
   }
   linkGraph = buildLinkGraph(result);
+  refreshLinkMapColorOptions();
   renderLinkMap();
+}
+
+// Frontmatter fields whose values name other notes. Each one draws a link on
+// the map, the same as a [[wiki link]] in the text.
+const LINK_MAP_FIELDS = ['related', 'links', 'parent'];
+const LINK_MAP_COLORS = 8;
+
+// A metadata value as a list: [a, b], "- item" lines, or one plain value.
+function metaList(value) {
+  if (!value) return [];
+  const v = value.trim();
+  let items;
+  if (v.startsWith('[') && v.endsWith(']') && !v.startsWith('[[')) {
+    items = v.slice(1, -1).split(',');
+  } else if (/^\s*-\s/m.test(v)) {
+    items = v.split('\n').filter(l => /^\s*-\s/.test(l)).map(l => l.replace(/^\s*-\s+/, ''));
+  } else {
+    items = [v];
+  }
+  return items.map(s => s.trim().replace(/^['"]|['"]$/g, '').replace(/^\[\[|\]\]$/g, '').trim()).filter(Boolean);
 }
 
 function buildLinkGraph(result) {
   const nodes = new Map();
   for (const f of result.files) {
     const p = normPath(f);
-    nodes.set(p, { path: p, name: getFileName(p), out: new Set(), in: new Set(), missing: [] });
+    nodes.set(p, { path: p, name: getFileName(p), out: new Set(), in: new Set(), missing: [], meta: null });
+  }
+  for (const [file, raw] of Object.entries(result.meta || {})) {
+    const n = nodes.get(normPath(file));
+    if (!n) continue;
+    const fields = fm.fields(fm.parse(raw));
+    if (fields.length) n.meta = Object.fromEntries(fields.map(f => [f.key, f.value]));
   }
   const edges = new Map();
   for (const l of result.links) {
@@ -5957,6 +5984,100 @@ function layoutLinkMap(center, showOrphans) {
   return placed;
 }
 
+// Metadata fields worth coloring by: not link fields, and few enough
+// distinct first values to read as groups.
+function linkMapColorFields() {
+  const skip = new Set(LINK_MAP_FIELDS.map(f => f.toLowerCase()));
+  const values = new Map();
+  for (const n of linkGraph.nodes.values()) {
+    if (!n.meta) continue;
+    for (const [k, v] of Object.entries(n.meta)) {
+      if (skip.has(k.toLowerCase())) continue;
+      const first = metaList(v)[0];
+      if (!first) continue;
+      if (!values.has(k)) values.set(k, new Set());
+      values.get(k).add(first);
+    }
+  }
+  return [...values].filter(([, set]) => set.size >= 1 && set.size <= 30).map(([k]) => k).sort((a, b) => a.localeCompare(b));
+}
+
+function refreshLinkMapColorOptions() {
+  const sel = document.getElementById('link-map-color');
+  const keep = sel.value;
+  const keys = linkGraph ? linkMapColorFields() : [];
+  sel.innerHTML = '<option value="">None</option>';
+  for (const k of keys) {
+    const opt = document.createElement('option');
+    opt.value = k;
+    opt.textContent = k;
+    sel.appendChild(opt);
+  }
+  sel.value = keys.includes(keep) ? keep : '';
+}
+
+// The 8 most common values get a color each; the rest share "other".
+function linkMapColorPlan(key) {
+  if (!key) return null;
+  const counts = new Map();
+  for (const n of linkGraph.nodes.values()) {
+    const first = n.meta ? metaList(n.meta[key])[0] : undefined;
+    if (first) counts.set(first, (counts.get(first) || 0) + 1);
+  }
+  const ranked = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const index = new Map();
+  ranked.slice(0, LINK_MAP_COLORS).forEach(([val], i) => index.set(val, i));
+  return { index, ranked, other: Math.max(0, ranked.length - LINK_MAP_COLORS) };
+}
+
+function linkMapNodeClass(n, plan, key) {
+  if (!plan) return '';
+  const first = n.meta ? metaList(n.meta[key])[0] : undefined;
+  if (!first) return '';
+  return plan.index.has(first) ? `lm-c${plan.index.get(first)}` : 'lm-co';
+}
+
+function linkMapColorKey(plan, key) {
+  const el = document.getElementById('link-map-colors');
+  if (!plan || plan.ranked.length === 0) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+  const items = plan.ranked.slice(0, LINK_MAP_COLORS).map(([val, count], i) =>
+    `<span><i class="lm-swatch lm-s${i}"></i> ${escapeHtml(val)} (${count})</span>`);
+  if (plan.other) items.push(`<span><i class="lm-swatch lm-so"></i> other (${plan.other} value${plan.other === 1 ? '' : 's'})</span>`);
+  el.innerHTML = `<b>${escapeHtml(key)}:</b> ` + items.join('');
+  el.classList.remove('hidden');
+}
+
+function linkMapMatches(n, text) {
+  if (!text) return true;
+  const hay = [n.name, ...(n.meta ? Object.entries(n.meta).map(([k, v]) => `${k}: ${v}`) : [])].join('\n').toLowerCase();
+  return hay.includes(text);
+}
+
+function linkMapLabel(n, useTitles) {
+  const plain = n.name.replace(/\.(md|markdown|txt)$/i, '');
+  if (!useTitles || !n.meta || !n.meta.title) return plain;
+  const t = metaList(n.meta.title)[0];
+  if (!t) return plain;
+  return t.length > 40 ? t.slice(0, 39) + '…' : t;
+}
+
+// Tooltip lines for a note's metadata, skipping the link fields.
+function linkMapMetaLines(n) {
+  if (!n.meta) return [];
+  const skip = new Set(LINK_MAP_FIELDS.map(f => f.toLowerCase()));
+  return Object.entries(n.meta)
+    .filter(([k]) => !skip.has(k.toLowerCase()))
+    .slice(0, 6)
+    .map(([k, v]) => {
+      const flat = metaList(v).join(', ');
+      return `${k}: ${flat.length > 80 ? flat.slice(0, 79) + '…' : flat}`;
+    });
+}
+
 function renderLinkMap() {
   const svg = document.getElementById('link-map-svg');
   const status = document.getElementById('link-map-status');
@@ -5964,6 +6085,11 @@ function renderLinkMap() {
 
   const follow = document.getElementById('link-map-follow').checked;
   const showOrphans = document.getElementById('link-map-orphans').checked;
+  const useTitles = document.getElementById('link-map-titles').checked;
+  const colorKey = document.getElementById('link-map-color').value;
+  const filterText = document.getElementById('link-map-filter').value.trim().toLowerCase();
+  const colorPlan = linkMapColorPlan(colorKey);
+  linkMapColorKey(colorPlan, colorKey);
   if (follow || !linkMapCenter || !linkGraph.nodes.has(linkMapCenter)) {
     linkMapCenter = linkMapCenterPath() || linkMapCenter;
   }
@@ -6036,12 +6162,14 @@ function renderLinkMap() {
     const n = linkGraph.nodes.get(p);
     const isCenter = p === linkMapCenter;
     const hot = linkMapHover === p || (linkMapHover && (n.out.has(linkMapHover) || n.in.has(linkMapHover)));
-    const cls = ['lm-node', isCenter ? 'lm-center' : '', v.orphan ? 'lm-orphan' : '', hot ? 'lm-hot' : '', linkMapHover === p ? 'lm-focus' : ''].filter(Boolean).join(' ');
-    const label = n.name.replace(/\.(md|markdown|txt)$/i, '');
+    const dim = filterText && !linkMapMatches(n, filterText);
+    const cls = ['lm-node', isCenter ? 'lm-center' : '', v.orphan ? 'lm-orphan' : '', hot ? 'lm-hot' : '', linkMapHover === p ? 'lm-focus' : '', dim ? 'lm-dim' : '', linkMapNodeClass(n, colorPlan, colorKey)].filter(Boolean).join(' ');
+    const label = linkMapLabel(n, useTitles);
+    const metaLines = linkMapMetaLines(n);
     const labelSide = v.ring === 0 ? 'middle' : (Math.cos(v.angle) < -0.2 ? 'end' : Math.cos(v.angle) > 0.2 ? 'start' : 'middle');
     const lx = v.ring === 0 ? v.x : v.x + 12 * Math.cos(v.angle);
     const ly = v.ring === 0 ? v.y + 22 : v.y + 12 * Math.sin(v.angle) + 4;
-    parts.push(`<g class="${cls}" data-path="${esc(p)}"><circle cx="${v.x}" cy="${v.y}" r="${isCenter ? NODE_R + 4 : NODE_R}"/><text x="${lx}" y="${ly}" text-anchor="${labelSide}">${esc(label)}</text><title>${esc(p)}\n${n.out.size} out, ${n.in.size} in${n.missing.length ? `, ${n.missing.length} missing` : ''}</title></g>`);
+    parts.push(`<g class="${cls}" data-path="${esc(p)}"><circle cx="${v.x}" cy="${v.y}" r="${isCenter ? NODE_R + 4 : NODE_R}"/><text x="${lx}" y="${ly}" text-anchor="${labelSide}">${esc(label)}</text><title>${esc(p)}\n${n.out.size} out, ${n.in.size} in${n.missing.length ? `, ${n.missing.length} missing` : ''}${metaLines.length ? '\n' + esc(metaLines.join('\n')) : ''}</title></g>`);
   }
 
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
@@ -6071,6 +6199,9 @@ function initLinkMap() {
   document.getElementById('link-map-close').addEventListener('click', closeLinkMap);
   document.getElementById('link-map-refresh').addEventListener('click', rescanLinkMap);
   document.getElementById('link-map-orphans').addEventListener('change', renderLinkMap);
+  document.getElementById('link-map-titles').addEventListener('change', renderLinkMap);
+  document.getElementById('link-map-color').addEventListener('change', renderLinkMap);
+  document.getElementById('link-map-filter').addEventListener('input', renderLinkMap);
   document.getElementById('link-map-follow').addEventListener('change', renderLinkMap);
   document.addEventListener('keydown', (e) => {
     if (!linkMapOpen) return;

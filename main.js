@@ -848,7 +848,66 @@ ipcMain.handle('print-text', async (event, { title, text, fontFamily, fontSize }
   });
 });
 
-async function scanLinks(rootDir) {
+// Frontmatter for the Link Map. This follows the same top-of-file --- block
+// rules as src/frontmatter.mjs, which this CommonJS file cannot import. It
+// hands back the raw block (the renderer parses it with frontmatter.mjs) and
+// the note names found in the given link fields.
+const FM_OPEN = /^---[ \t]*\r?\n/;
+const FM_CLOSE = /^(---|\.\.\.)[ \t]*$/;
+const FM_KEY = /^([A-Za-z0-9_][A-Za-z0-9_.-]*)[ \t]*:(.*)$/;
+const LINK_FIELDS_DEFAULT = ['related', 'links', 'parent'];
+
+function extractFrontmatter(text) {
+  const t = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
+  const open = FM_OPEN.exec(t);
+  if (!open) return null;
+  const lines = [];
+  let pos = open[0].length;
+  while (pos <= t.length) {
+    const nl = t.indexOf('\n', pos);
+    const end = nl === -1 ? t.length : nl;
+    const line = t.slice(pos, end).replace(/\r$/, '');
+    if (FM_CLOSE.test(line)) return { raw: t.slice(0, nl === -1 ? t.length : nl + 1), lines };
+    if (nl === -1) return null;
+    lines.push(line);
+    pos = nl + 1;
+  }
+  return null;
+}
+
+function cleanLinkText(s) {
+  return s.trim().replace(/^['"]|['"]$/g, '').replace(/^\[\[|\]\]$/g, '').trim();
+}
+
+// Note names in the link fields: a flow list [a, b], a "- item" list, or one
+// plain value. A value written as [[a]] is skipped here because the body scan
+// already finds it.
+function frontmatterTargets(lines, fields) {
+  const want = new Set(fields.map(f => f.toLowerCase()));
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = FM_KEY.exec(lines[i]);
+    if (!m || !want.has(m[1].toLowerCase())) continue;
+    const rest = m[2].trim();
+    if (rest === '') {
+      for (let j = i + 1; j < lines.length; j++) {
+        if (lines[j].trim() === '') continue;
+        const item = /^\s*-\s+(.*)$/.exec(lines[j]);
+        if (!item) break;
+        out.push(cleanLinkText(item[1]));
+      }
+    } else if (rest.startsWith('[[')) {
+      continue;
+    } else if (rest.startsWith('[') && rest.endsWith(']')) {
+      rest.slice(1, -1).split(',').forEach(s => out.push(cleanLinkText(s)));
+    } else {
+      out.push(cleanLinkText(rest));
+    }
+  }
+  return out.filter(Boolean);
+}
+
+async function scanLinks(rootDir, linkFields) {
   const files = [];
   async function walk(d) {
     let entries;
@@ -898,7 +957,17 @@ async function scanLinks(rootDir) {
   };
 
   const links = [];
+  const meta = {};
   const MAX_SIZE = 2 * 1024 * 1024;
+  const addLink = (p, rawTarget, seen) => {
+    const target = rawTarget.split('|')[0].split('#')[0];
+    if (!target.trim()) return;
+    const to = resolveLink(p, target);
+    const key = to || ('missing:' + target.trim().toLowerCase());
+    if (seen.has(key)) return;
+    seen.add(key);
+    links.push({ from: p, to, text: target.trim() });
+  };
   for (const p of files) {
     let buf;
     try {
@@ -912,16 +981,15 @@ async function scanLinks(rootDir) {
     const re = /\[\[([^\]\n]+)\]\]/g;
     let m;
     const seen = new Set();
-    while ((m = re.exec(text)) !== null) {
-      const target = m[1].split('|')[0].split('#')[0];
-      const to = resolveLink(p, target);
-      const key = to || ('missing:' + target.trim().toLowerCase());
-      if (seen.has(key)) continue;
-      seen.add(key);
-      links.push({ from: p, to, text: target.trim() });
+    while ((m = re.exec(text)) !== null) addLink(p, m[1], seen);
+
+    const block = extractFrontmatter(text);
+    if (block) {
+      meta[p] = block.raw.slice(0, 65536);
+      for (const t of frontmatterTargets(block.lines, linkFields)) addLink(p, t, seen);
     }
   }
-  return { files, links };
+  return { files, links, meta };
 }
 
 ipcMain.handle('edit-action', async (event, { action }) => {
@@ -929,10 +997,11 @@ ipcMain.handle('edit-action', async (event, { action }) => {
   if (mainWindow && allowed.includes(action)) mainWindow.webContents[action]();
 });
 
-ipcMain.handle('scan-links', async (event, { dirPath }) => {
+ipcMain.handle('scan-links', async (event, { dirPath, linkFields }) => {
   try {
     if (!fs.statSync(dirPath).isDirectory()) return { success: false, error: 'Folder not found.' };
-    const result = await scanLinks(dirPath);
+    const fields = Array.isArray(linkFields) ? linkFields.filter(f => typeof f === 'string') : LINK_FIELDS_DEFAULT;
+    const result = await scanLinks(dirPath, fields);
     return { success: true, ...result };
   } catch (err) {
     return { success: false, error: err.message };

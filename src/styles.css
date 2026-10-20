@@ -3008,3 +3008,87 @@ body.dark-theme ::-webkit-scrollbar-track { background: var(--surface-2); }
   font-size: 12px;
   color: var(--ink-2);
 }
+
+/* Link Map metadata: titles, color by field, filter. The 8 colors follow the
+   Okabe-Ito colorblind-safe palette; values are also named in the key and
+   in each node's tooltip, so color is never the only signal. */
+:root {
+  --lm-c0: #e69f00;
+  --lm-c1: #56b4e9;
+  --lm-c2: #009e73;
+  --lm-c3: #f0e442;
+  --lm-c4: #0072b2;
+  --lm-c5: #d55e00;
+  --lm-c6: #cc79a7;
+  --lm-c7: #bdbdbd;
+  --lm-co: #8a8a8a;
+}
+
+#link-map-header {
+  flex-wrap: wrap;
+}
+
+#link-map-color,
+#link-map-filter {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 2px solid var(--stroke);
+  padding: 2px 6px;
+}
+
+#link-map-filter {
+  min-width: 11em;
+}
+
+#link-map-colors {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--ink-2);
+  border-top: 2px solid var(--stroke);
+}
+
+#link-map-colors.hidden {
+  display: none;
+}
+
+.lm-swatch {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+  vertical-align: -1px;
+}
+
+.lm-s0 { background: var(--lm-c0); }
+.lm-s1 { background: var(--lm-c1); }
+.lm-s2 { background: var(--lm-c2); }
+.lm-s3 { background: var(--lm-c3); }
+.lm-s4 { background: var(--lm-c4); }
+.lm-s5 { background: var(--lm-c5); }
+.lm-s6 { background: var(--lm-c6); }
+.lm-s7 { background: var(--lm-c7); }
+.lm-so { background: var(--lm-co); }
+
+.lm-node.lm-c0:not(.lm-hot) circle { fill: var(--lm-c0); }
+.lm-node.lm-c1:not(.lm-hot) circle { fill: var(--lm-c1); }
+.lm-node.lm-c2:not(.lm-hot) circle { fill: var(--lm-c2); }
+.lm-node.lm-c3:not(.lm-hot) circle { fill: var(--lm-c3); }
+.lm-node.lm-c4:not(.lm-hot) circle { fill: var(--lm-c4); }
+.lm-node.lm-c5:not(.lm-hot) circle { fill: var(--lm-c5); }
+.lm-node.lm-c6:not(.lm-hot) circle { fill: var(--lm-c6); }
+.lm-node.lm-c7:not(.lm-hot) circle { fill: var(--lm-c7); }
+.lm-node.lm-co:not(.lm-hot) circle { fill: var(--lm-co); }
+
+.lm-node.lm-dim {
+  opacity: 0.22;
+}
