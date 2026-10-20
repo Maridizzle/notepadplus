@@ -95,6 +95,7 @@
     <button id="btn-typewriter" title="Typewriter scrolling: keep the line you are typing on centered">Typewriter</button>
     <button id="btn-grammar" title="Check Grammar (LanguageTool)">Grammar</button>
     <button id="btn-spell" title="Spell Check: step through misspelled words (Ctrl+Alt+K)">Spell</button>
+    <button id="btn-meta" title="Metadata: edit the frontmatter block of a .md or .txt file (Ctrl+Alt+Y)">Meta</button>
     <button id="btn-closers" title="Find missing or extra brackets and quotes">Closers</button>
     <span class="toolbar-separator"></span>
     <button id="btn-compare" title="Compare Files">Compare</button>
@@ -207,6 +208,34 @@
       </div>
       <div id="spell-list-title">ALL MISSPELLED WORDS</div>
       <div id="spell-results"></div>
+    </div>
+    <div id="meta-panel" class="hidden">
+      <div id="meta-header">
+        <span>METADATA</span>
+        <span id="meta-status"></span>
+        <button id="meta-refresh" title="Reload from the document">&#8635;</button>
+        <button id="meta-close" title="Close">&times;</button>
+      </div>
+      <div id="meta-msg" class="hidden" role="status"></div>
+      <div id="meta-fields"></div>
+      <div id="meta-add">
+        <input type="text" id="meta-new-key" placeholder="key" autocomplete="off" spellcheck="false" aria-label="New field name">
+        <input type="text" id="meta-new-val" placeholder="value" autocomplete="off" spellcheck="false" aria-label="New field value">
+        <button id="meta-add-btn">Add field</button>
+      </div>
+      <div id="meta-apply-bar">
+        <button id="meta-apply">Apply changes</button>
+        <button id="meta-revert">Revert</button>
+      </div>
+      <div id="meta-handoff">
+        <div id="meta-handoff-title">AI HAND-OFF</div>
+        <div class="meta-hint">Copy the block, give it to an AI, paste its answer back and apply. Only a lone --- block is accepted, so the rest of the file cannot change.</div>
+        <textarea id="meta-raw" rows="7" spellcheck="false" aria-label="Metadata block as text"></textarea>
+        <div class="meta-btn-row">
+          <button id="meta-copy">Copy block</button>
+          <button id="meta-apply-raw">Apply pasted block</button>
+        </div>
+      </div>
     </div>
   </div>
 

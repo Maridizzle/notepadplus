@@ -66,6 +66,7 @@ import { sql } from '@codemirror/lang-sql';
 import * as Diff from 'diff';
 import { isTriggerChar, computeFix, wordBefore, spacingAction } from './autocap.js';
 import { MIN_PREFIX, suggest, learnWord, loadLearned, exportLearned, takeLearnedDirty } from './complete.js';
+import * as fm from './frontmatter.mjs';
 
 const stream = (mode) => () => StreamLanguage.define(mode);
 
@@ -784,6 +785,7 @@ function runCloserCheck() {
   closerMarks = marks;
 
   if (spell.open) closeSpellPanel();
+  if (meta.open) closeMetaPanel();
   document.getElementById('grammar-panel').classList.add('hidden');
   document.getElementById('btn-grammar').classList.remove('active');
   document.getElementById('closer-panel').classList.remove('hidden');
@@ -1766,6 +1768,8 @@ function switchToTab(id) {
   renderTabs();
   scheduleFunctionListRefresh();
   if (linkMapOpen && linkGraph) renderLinkMap();
+  if (meta.open) { metaResetPending(); metaMessage(''); metaRender(); }
+  if (spell.open) spellRescan(0);
 }
 
 async function confirmDiscard(message) {
@@ -3046,6 +3050,7 @@ function closeGrammarPanel() {
 
 async function runGrammarCheck() {
   if (spell.open) closeSpellPanel();
+  if (meta.open) closeMetaPanel();
   document.getElementById('closer-panel').classList.add('hidden');
   document.getElementById('btn-closers').classList.remove('active');
   if (!window.electronAPI || !window.electronAPI.checkGrammar) return;
@@ -3468,6 +3473,7 @@ async function openSpellCheck() {
   document.getElementById('btn-grammar').classList.remove('active');
   document.getElementById('closer-panel').classList.add('hidden');
   document.getElementById('btn-closers').classList.remove('active');
+  if (meta.open) closeMetaPanel();
   refreshGrammarDecorations();
 
   spell.open = true;
@@ -3521,6 +3527,319 @@ function initSpellCheck() {
   });
   document.getElementById('spell-panel').addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { e.preventDefault(); closeSpellPanel(); }
+  });
+}
+
+// ---- Metadata (frontmatter) panel ----
+// Shows and edits the --- block at the top of a .md or .txt file. Edits
+// stay pending until Apply. Every write goes through frontmatter.mjs,
+// which refuses anything that would change the body, and the body is
+// compared again after the editor is updated; if it differs, the change
+// is undone.
+const META_EXTS = ['.md', '.markdown', '.txt'];
+const meta = {
+  open: false,
+  parsed: null,       // parse() of the document as last shown
+  shownBlock: null,   // the block text as shown, to spot outside edits
+  removed: new Set(),
+  added: [],          // [{ key, value }] new fields not yet applied
+};
+
+function metaSupported() {
+  const t = statusTarget();
+  if (t.filePath) {
+    const dot = t.filePath.lastIndexOf('.');
+    return dot >= 0 && META_EXTS.includes(t.filePath.slice(dot).toLowerCase());
+  }
+  return t.language === 'plain' || t.language === 'markdown';
+}
+
+function metaText() {
+  return proseMode
+    ? document.getElementById('prose-editor').value
+    : statusTarget().view.state.doc.toString();
+}
+
+function metaMessage(text, isError) {
+  const el = document.getElementById('meta-msg');
+  if (!text) {
+    el.classList.add('hidden');
+    el.textContent = '';
+    return;
+  }
+  el.textContent = text;
+  el.classList.toggle('err', !!isError);
+  el.classList.remove('hidden');
+}
+
+function metaResetPending() {
+  meta.removed.clear();
+  meta.added = [];
+}
+
+function metaRender() {
+  const wrap = document.getElementById('meta-fields');
+  const status = document.getElementById('meta-status');
+  const supported = metaSupported();
+  const controls = ['meta-new-key', 'meta-new-val', 'meta-add-btn', 'meta-apply', 'meta-revert', 'meta-raw', 'meta-copy', 'meta-apply-raw'];
+  controls.forEach(id => { document.getElementById(id).disabled = !supported; });
+  wrap.innerHTML = '';
+
+  if (!supported) {
+    meta.parsed = null;
+    meta.shownBlock = null;
+    status.textContent = 'Not available';
+    document.getElementById('meta-raw').value = '';
+    const note = document.createElement('div');
+    note.className = 'meta-empty';
+    note.textContent = 'Metadata blocks are supported in .md, .markdown, and .txt files.';
+    wrap.appendChild(note);
+    return;
+  }
+
+  const text = metaText();
+  const parsed = fm.parse(text);
+  meta.parsed = parsed;
+  meta.shownBlock = parsed.present ? parsed.block : null;
+  const list = fm.fields(parsed);
+  status.textContent = parsed.present ? `${list.length} field${list.length === 1 ? '' : 's'}` : 'No metadata yet';
+  document.getElementById('meta-raw').value = parsed.present ? parsed.block : '';
+
+  if (!parsed.present && meta.added.length === 0) {
+    const note = document.createElement('div');
+    note.className = 'meta-empty';
+    note.textContent = 'This file has no metadata block. Add a field below to create one at the top. The text of the file is not touched.';
+    wrap.appendChild(note);
+  }
+
+  const rows = list.map(f => ({ ...f, added: false })).concat(meta.added.map(f => ({ ...f, added: true })));
+  for (const f of rows) {
+    const row = document.createElement('div');
+    row.className = 'meta-row' + (f.added ? ' added' : '') + (meta.removed.has(f.key) ? ' removed' : '');
+    row.dataset.key = f.key;
+    const head = document.createElement('div');
+    head.className = 'meta-row-head';
+    const label = document.createElement('span');
+    label.className = 'meta-key';
+    label.textContent = f.key;
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'meta-remove';
+    rm.textContent = f.added || !meta.removed.has(f.key) ? 'Remove' : 'Keep';
+    rm.addEventListener('click', () => metaToggleRemove(f));
+    head.append(label, rm);
+    const val = document.createElement('textarea');
+    val.className = 'meta-val';
+    val.rows = Math.min(8, Math.max(1, f.value.split('\n').length));
+    val.value = f.value;
+    val.spellcheck = false;
+    val.dataset.orig = f.added ? '' : f.value;
+    val.setAttribute('aria-label', `Value of ${f.key}`);
+    row.append(head, val);
+    wrap.appendChild(row);
+  }
+}
+
+// Reads the pending edits back out of the panel into a parsed object.
+function metaCollect() {
+  const text = metaText();
+  let p = fm.parse(text);
+  if (!p.present) p = fm.emptyFor(text);
+  const rows = document.querySelectorAll('#meta-fields .meta-row');
+  for (const row of rows) {
+    const key = row.dataset.key;
+    const ta = row.querySelector('.meta-val');
+    if (row.classList.contains('removed')) {
+      p = fm.removeField(p, key);
+    } else if (row.classList.contains('added') || ta.value !== ta.dataset.orig) {
+      p = fm.setField(p, key, ta.value);
+    }
+  }
+  return p;
+}
+
+// Keep what was typed in the rows while the panel redraws.
+function metaKeepTyped() {
+  const typed = new Map();
+  document.querySelectorAll('#meta-fields .meta-row').forEach(row => {
+    typed.set(row.dataset.key, row.querySelector('.meta-val').value);
+  });
+  meta.added.forEach(a => { if (typed.has(a.key)) a.value = typed.get(a.key); });
+  return typed;
+}
+
+function metaToggleRemove(f) {
+  const typed = metaKeepTyped();
+  if (f.added) {
+    meta.added = meta.added.filter(a => a.key !== f.key);
+  } else if (meta.removed.has(f.key)) {
+    meta.removed.delete(f.key);
+  } else {
+    meta.removed.add(f.key);
+  }
+  metaRender();
+  document.querySelectorAll('#meta-fields .meta-row').forEach(row => {
+    if (typed.has(row.dataset.key) && !row.classList.contains('removed')) {
+      row.querySelector('.meta-val').value = typed.get(row.dataset.key);
+    }
+  });
+}
+
+function metaAddField() {
+  const keyEl = document.getElementById('meta-new-key');
+  const valEl = document.getElementById('meta-new-val');
+  const key = keyEl.value.trim();
+  if (!fm.isValidKey(key)) {
+    metaMessage(`"${key}" is not a valid key. Use letters, digits, _, -, and . with no spaces.`, true);
+    return;
+  }
+  const exists = (meta.parsed && fm.getField(meta.parsed, key) !== undefined) || meta.added.some(a => a.key === key);
+  if (exists) {
+    metaMessage(`"${key}" already exists. Edit its value in the list.`, true);
+    return;
+  }
+  const bad = fm.checkValue(valEl.value);
+  if (bad) {
+    metaMessage(bad, true);
+    return;
+  }
+  const typed = metaKeepTyped();
+  meta.added.push({ key, value: valEl.value });
+  keyEl.value = '';
+  valEl.value = '';
+  metaMessage('');
+  metaRender();
+  document.querySelectorAll('#meta-fields .meta-row').forEach(row => {
+    if (typed.has(row.dataset.key) && !row.classList.contains('added')) {
+      row.querySelector('.meta-val').value = typed.get(row.dataset.key);
+    }
+  });
+}
+
+// The only place metadata is written to the document.
+function metaWrite(result, oldText) {
+  const oldBody = fm.parse(oldText).body;
+  if (proseMode) {
+    document.getElementById('prose-editor').value = result.text;
+    markModified();
+    return fm.parse(document.getElementById('prose-editor').value).body === oldBody;
+  }
+  const view = statusTarget().view;
+  view.dispatch({ changes: { from: result.from, to: result.to, insert: result.block } });
+  if (fm.parse(view.state.doc.toString()).body === oldBody) return true;
+  view.dispatch({ changes: { from: result.from, to: result.from + result.block.length, insert: result.oldBlock } });
+  return false;
+}
+
+function metaCommit(build) {
+  if (!metaSupported()) return;
+  const oldText = metaText();
+  const current = fm.parse(oldText);
+  const nowBlock = current.present ? current.block : null;
+  if (nowBlock !== meta.shownBlock) {
+    metaResetPending();
+    metaRender();
+    metaMessage('The metadata changed in the editor after this panel was drawn. It has been reloaded. Nothing was written.', true);
+    return;
+  }
+  let result;
+  try {
+    result = build(oldText);
+  } catch (e) {
+    metaMessage(e.message, true);
+    return;
+  }
+  if (result.text === oldText) {
+    metaMessage('No changes to apply.');
+    return;
+  }
+  if (!metaWrite(result, oldText)) {
+    metaMessage('Refused: that would have changed the body of the file. The edit was undone.', true);
+    return;
+  }
+  metaResetPending();
+  metaRender();
+  metaMessage('Metadata updated. The body of the file was not changed.');
+}
+
+function metaApply() {
+  metaCommit(oldText => fm.apply(oldText, metaCollect()));
+}
+
+function metaApplyRaw() {
+  const raw = document.getElementById('meta-raw').value;
+  metaCommit(oldText => fm.replaceBlock(oldText, raw));
+}
+
+async function metaCopy() {
+  const raw = document.getElementById('meta-raw');
+  const text = raw.value;
+  if (!text.trim()) {
+    metaMessage('There is no metadata block to copy yet.', true);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    raw.focus();
+    raw.select();
+    document.execCommand('copy');
+  }
+  metaMessage('Metadata block copied.');
+}
+
+function closeMetaPanel() {
+  meta.open = false;
+  document.getElementById('meta-panel').classList.add('hidden');
+  document.getElementById('btn-meta').classList.remove('active');
+  const view = proseMode ? document.getElementById('prose-editor') : activeView();
+  if (view && view.focus) view.focus();
+}
+
+function openMetaPanel() {
+  if (spell.open) closeSpellPanel();
+  document.getElementById('grammar-panel').classList.add('hidden');
+  document.getElementById('btn-grammar').classList.remove('active');
+  document.getElementById('closer-panel').classList.add('hidden');
+  document.getElementById('btn-closers').classList.remove('active');
+  refreshGrammarDecorations();
+
+  meta.open = true;
+  metaResetPending();
+  metaMessage('');
+  document.getElementById('meta-panel').classList.remove('hidden');
+  document.getElementById('btn-meta').classList.add('active');
+  metaRender();
+}
+
+function toggleMetaPanel() {
+  if (meta.open) closeMetaPanel(); else openMetaPanel();
+}
+
+function initMetaPanel() {
+  document.getElementById('btn-meta').addEventListener('click', toggleMetaPanel);
+  document.getElementById('meta-close').addEventListener('click', closeMetaPanel);
+  document.getElementById('meta-refresh').addEventListener('click', () => {
+    metaResetPending();
+    metaMessage('');
+    metaRender();
+  });
+  document.getElementById('meta-add-btn').addEventListener('click', metaAddField);
+  ['meta-new-key', 'meta-new-val'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); metaAddField(); }
+    });
+  });
+  document.getElementById('meta-apply').addEventListener('click', metaApply);
+  document.getElementById('meta-revert').addEventListener('click', () => {
+    metaResetPending();
+    metaMessage('');
+    metaRender();
+  });
+  document.getElementById('meta-copy').addEventListener('click', metaCopy);
+  document.getElementById('meta-apply-raw').addEventListener('click', metaApplyRaw);
+  document.getElementById('meta-panel').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); closeMetaPanel(); }
   });
 }
 
@@ -5187,6 +5506,7 @@ const commands = {
   'toggle-prose': () => toggleProseMode(),
   'grammar-check': () => runGrammarCheck(),
   'spell-check': () => openSpellCheck(),
+  'meta-panel': () => toggleMetaPanel(),
   'compare': () => openCompare(),
   'focus-next': () => cycleFocus(1),
   'focus-prev': () => cycleFocus(-1),
@@ -5321,6 +5641,7 @@ const TOOLBAR_CATALOG = [
     { id: 'btn-complete', label: 'Complete' },
     { id: 'btn-grammar', label: 'Grammar' },
     { id: 'btn-spell', label: 'Spell' },
+    { id: 'btn-meta', label: 'Meta' },
     { id: 'btn-compare', label: 'Compare' },
     { id: 'command-palette', label: 'Palette', title: 'Command Palette', cmd: 'command-palette' },
     { id: 'shortcuts', label: 'Keys', title: 'Keyboard Shortcuts', cmd: 'shortcuts' },
@@ -6111,6 +6432,7 @@ function wireEvents() {
   });
   document.getElementById('btn-grammar').addEventListener('click', runGrammarCheck);
   initSpellCheck();
+  initMetaPanel();
   document.getElementById('grammar-close').addEventListener('click', closeGrammarPanel);
   document.getElementById('btn-closers').addEventListener('click', runCloserCheck);
   document.getElementById('closer-close').addEventListener('click', closeCloserPanel);

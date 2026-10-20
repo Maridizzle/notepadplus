@@ -1832,7 +1832,8 @@ body.dragging-split {
 /* Side panels (closers, grammar): zinc slabs with cadmium header blocks */
 #closer-panel,
 #grammar-panel,
-#spell-panel {
+#spell-panel,
+#meta-panel {
   width: 300px;
   flex-shrink: 0;
   display: flex;
@@ -1848,13 +1849,15 @@ body.dragging-split {
 
 #closer-panel.hidden,
 #grammar-panel.hidden,
-#spell-panel.hidden {
+#spell-panel.hidden,
+#meta-panel.hidden {
   display: none;
 }
 
 #closer-header,
 #grammar-header,
-#spell-header {
+#spell-header,
+#meta-header {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1872,7 +1875,8 @@ body.dragging-split {
 
 #closer-status,
 #grammar-status,
-#spell-status {
+#spell-status,
+#meta-status {
   flex: 1;
   font-weight: 600;
   letter-spacing: 0;
@@ -1886,7 +1890,9 @@ body.dragging-split {
 #closer-close,
 #grammar-close,
 #spell-rerun,
-#spell-close {
+#spell-close,
+#meta-refresh,
+#meta-close {
   background: var(--ink);
   border: none;
   color: var(--white-chalk);
@@ -1900,7 +1906,9 @@ body.dragging-split {
 #closer-close:hover,
 #grammar-close:hover,
 #spell-rerun:hover,
-#spell-close:hover {
+#spell-close:hover,
+#meta-refresh:hover,
+#meta-close:hover {
   background: var(--ultra);
 }
 
@@ -2845,4 +2853,158 @@ body.dark-theme ::-webkit-scrollbar-track { background: var(--surface-2); }
   padding: 12px;
   color: var(--text-secondary, var(--ink-2));
   text-align: center;
+}
+
+/* Metadata panel: one row per frontmatter field, then the AI hand-off box */
+#meta-panel {
+  overflow-y: auto;
+}
+
+#meta-msg {
+  padding: 8px 12px;
+  font-size: 12px;
+  border-bottom: 2px solid var(--stroke);
+  color: var(--text-on-yellow);
+  background: var(--yel-cad);
+  overflow-wrap: anywhere;
+}
+
+#meta-msg.err {
+  color: var(--white-chalk);
+  background: var(--vermilion);
+}
+
+#meta-msg.hidden {
+  display: none;
+}
+
+#meta-fields {
+  display: flex;
+  flex-direction: column;
+}
+
+.meta-empty {
+  padding: 12px;
+  font-size: 13px;
+  color: var(--text-secondary, var(--ink-2));
+}
+
+.meta-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--stroke);
+}
+
+.meta-row.removed .meta-val {
+  text-decoration: line-through;
+  opacity: 0.5;
+}
+
+.meta-row.added .meta-key::after {
+  content: " (new)";
+  font-weight: 600;
+  color: var(--ultra);
+}
+
+.meta-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.meta-key {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.meta-val,
+#meta-new-key,
+#meta-new-val,
+#meta-raw {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 2px solid var(--stroke);
+  padding: 4px 6px;
+}
+
+.meta-val,
+#meta-raw {
+  resize: vertical;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.meta-remove,
+#meta-add button,
+#meta-apply-bar button,
+.meta-btn-row button {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 2px solid var(--stroke);
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.meta-remove:hover,
+.meta-remove:focus-visible,
+#meta-add button:hover,
+#meta-add button:focus-visible,
+#meta-apply-bar button:hover,
+#meta-apply-bar button:focus-visible,
+.meta-btn-row button:hover,
+.meta-btn-row button:focus-visible {
+  background: var(--yel-cad);
+  color: var(--text-on-yellow);
+}
+
+#meta-add button:disabled,
+#meta-apply-bar button:disabled,
+.meta-btn-row button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+#meta-add,
+#meta-handoff {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 2px solid var(--stroke);
+}
+
+#meta-apply-bar,
+.meta-btn-row {
+  display: flex;
+  gap: 6px;
+  padding: 0;
+}
+
+#meta-apply-bar {
+  padding: 10px 12px;
+  border-bottom: 2px solid var(--stroke);
+}
+
+#meta-handoff-title {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--ink-2);
+}
+
+.meta-hint {
+  font-size: 12px;
+  color: var(--ink-2);
 }

@@ -573,6 +573,7 @@ function menuTemplateFor(cmd) {
         cmd('Toggle Prose Mode (Grammarly)', 'toggle-prose', { accelerator: 'CmdOrCtrl+Alt+Shift+P' }),
         cmd('Check Grammar', 'grammar-check', { accelerator: 'CmdOrCtrl+Alt+G' }),
         cmd('Spell Check...', 'spell-check', { accelerator: 'CmdOrCtrl+Alt+K' }),
+        cmd('Metadata (Frontmatter)', 'meta-panel', { accelerator: 'CmdOrCtrl+Alt+Y' }),
         cmd('Compare With File...', 'compare', { accelerator: 'CmdOrCtrl+Alt+C' }),
       ],
     },
