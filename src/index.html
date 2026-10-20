@@ -94,6 +94,7 @@
     <button id="btn-complete" class="active" title="Suggest words as you type (Tab accepts)">Complete</button>
     <button id="btn-typewriter" title="Typewriter scrolling: keep the line you are typing on centered">Typewriter</button>
     <button id="btn-grammar" title="Check Grammar (LanguageTool)">Grammar</button>
+    <button id="btn-spell" title="Spell Check: step through misspelled words (Ctrl+Alt+K)">Spell</button>
     <button id="btn-closers" title="Find missing or extra brackets and quotes">Closers</button>
     <span class="toolbar-separator"></span>
     <button id="btn-compare" title="Compare Files">Compare</button>
@@ -181,6 +182,31 @@
       </div>
       <label id="closer-options"><input type="checkbox" id="closer-quotes" checked> Check quotes</label>
       <div id="closer-results"></div>
+    </div>
+    <div id="spell-panel" class="hidden">
+      <div id="spell-header">
+        <span>SPELLING</span>
+        <span id="spell-status"></span>
+        <button id="spell-rerun" title="Re-scan">&#8635;</button>
+        <button id="spell-close" title="Close">&times;</button>
+      </div>
+      <div id="spell-note" class="hidden"></div>
+      <div id="spell-current">
+        <div id="spell-current-label">NOT IN DICTIONARY</div>
+        <div id="spell-context"></div>
+        <input type="text" id="spell-replace" placeholder="Change to" autocomplete="off" spellcheck="false" aria-label="Change to">
+        <select id="spell-suggestions" size="6" aria-label="Suggestions"></select>
+        <div id="spell-actions">
+          <button id="spell-change">Change</button>
+          <button id="spell-change-all">Change All</button>
+          <button id="spell-ignore">Ignore</button>
+          <button id="spell-ignore-all">Ignore All</button>
+          <button id="spell-add">Add to Dictionary</button>
+        </div>
+        <label id="spell-skip-caps-label"><input type="checkbox" id="spell-skip-caps" checked> Skip ALL CAPS words</label>
+      </div>
+      <div id="spell-list-title">ALL MISSPELLED WORDS</div>
+      <div id="spell-results"></div>
     </div>
   </div>
 

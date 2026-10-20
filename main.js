@@ -572,6 +572,7 @@ function menuTemplateFor(cmd) {
       submenu: [
         cmd('Toggle Prose Mode (Grammarly)', 'toggle-prose', { accelerator: 'CmdOrCtrl+Alt+Shift+P' }),
         cmd('Check Grammar', 'grammar-check', { accelerator: 'CmdOrCtrl+Alt+G' }),
+        cmd('Spell Check...', 'spell-check', { accelerator: 'CmdOrCtrl+Alt+K' }),
         cmd('Compare With File...', 'compare', { accelerator: 'CmdOrCtrl+Alt+C' }),
       ],
     },
@@ -649,6 +650,8 @@ function createWindow() {
       spellcheck: true,
     },
   });
+
+  watchSpellDictionaries(mainWindow.webContents.session);
 
   mainWindow.webContents.on('context-menu', (event, params) => {
     if (params.misspelledWord) {
@@ -1000,6 +1003,39 @@ ipcMain.handle('save-learned-words', async (event, words) => {
   } catch (err) {
     return { success: false, error: err.message };
   }
+});
+
+// Spell check mode asks the renderer's built-in checker about each word.
+// The Hunspell dictionary on Windows and Linux is downloaded on first use,
+// so track whether it is actually loaded and say so instead of reporting a
+// clean document.
+const spellDictState = { ready: new Set(), failed: new Set() };
+
+function watchSpellDictionaries(ses) {
+  ses.on('spellcheck-dictionary-initialized', (event, lang) => {
+    spellDictState.ready.add(lang);
+    spellDictState.failed.delete(lang);
+  });
+  ses.on('spellcheck-dictionary-download-failure', (event, lang) => {
+    spellDictState.failed.add(lang);
+  });
+}
+
+ipcMain.handle('spell-info', async () => {
+  if (!mainWindow) return { languages: [], ready: [], failed: [] };
+  const ses = mainWindow.webContents.session;
+  const languages = ses.getSpellCheckerLanguages();
+  return {
+    languages: languages.length ? languages : ['en-US'],
+    ready: [...spellDictState.ready],
+    failed: [...spellDictState.failed],
+    native: process.platform === 'darwin',
+  };
+});
+
+ipcMain.handle('spell-add-word', async (event, word) => {
+  if (!mainWindow || typeof word !== 'string' || !word.trim()) return false;
+  return mainWindow.webContents.session.addWordToSpellCheckerDictionary(word.trim());
 });
 
 ipcMain.handle('check-grammar', async (event, { text, language }) => {

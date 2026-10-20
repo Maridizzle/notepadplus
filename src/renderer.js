@@ -783,6 +783,7 @@ function runCloserCheck() {
   closerIssues = issues;
   closerMarks = marks;
 
+  if (spell.open) closeSpellPanel();
   document.getElementById('grammar-panel').classList.add('hidden');
   document.getElementById('btn-grammar').classList.remove('active');
   document.getElementById('closer-panel').classList.remove('hidden');
@@ -3044,6 +3045,7 @@ function closeGrammarPanel() {
 }
 
 async function runGrammarCheck() {
+  if (spell.open) closeSpellPanel();
   document.getElementById('closer-panel').classList.add('hidden');
   document.getElementById('btn-closers').classList.remove('active');
   if (!window.electronAPI || !window.electronAPI.checkGrammar) return;
@@ -3178,6 +3180,348 @@ function applyGrammarFix(match, index) {
   showGrammarResults(grammarMatches);
   document.getElementById('grammar-status').textContent =
     grammarMatches.length === 0 ? 'No issues found' : `${grammarMatches.length} issue${grammarMatches.length > 1 ? 's' : ''}`;
+}
+
+// ---- Spell check mode ----
+// Word-style walk-through. Scans the document with the built-in checker
+// (webFrame.isWordMisspelled, exposed by the preload), steps through each
+// hit with suggestions, and lists every misspelled word with a count.
+// The checker reports on single words only, so words are cut out here.
+const SPELL_WORD_RE = /\p{L}[\p{L}'’]*/gu;
+const spell = {
+  open: false,
+  occ: [],            // [{ from, to, word }] in document order
+  idx: -1,            // index into occ of the word being shown
+  token: 0,           // bumps to cancel a scan in progress
+  ignore: new Set(),  // lowercase words skipped for this session
+  cache: new Map(),   // word -> misspelled?
+  busy: false,
+};
+
+function spellText() {
+  return proseMode
+    ? document.getElementById('prose-editor').value
+    : activeView().state.doc.toString();
+}
+
+function spellIsMisspelled(word) {
+  if (spell.cache.has(word)) return spell.cache.get(word);
+  let bad = false;
+  try {
+    bad = !!window.electronAPI.isWordMisspelled(word.replace(/’/g, "'"));
+  } catch (e) {
+    bad = false;
+  }
+  spell.cache.set(word, bad);
+  return bad;
+}
+
+// Skip bits of URLs, paths, handles, and identifiers: a word touching a
+// slash, @, #, underscore, or digit is not prose.
+function spellSkipContext(text, from, to) {
+  const before = text[from - 1];
+  const after = text[to];
+  if (before && /[\/\\@#_$%0-9]/.test(before)) return true;
+  if (after && /[\/\\@_0-9]/.test(after)) return true;
+  if (before === '.' && from > 1 && /\p{L}/u.test(text[from - 2])) return true;
+  if (after === '.' && /\p{L}/u.test(text[to + 1] || '')) return true;
+  return false;
+}
+
+async function spellScan() {
+  const myToken = ++spell.token;
+  const text = spellText();
+  const skipCaps = document.getElementById('spell-skip-caps').checked;
+  const found = [];
+  const re = new RegExp(SPELL_WORD_RE.source, 'gu');
+  let m;
+  let n = 0;
+  while ((m = re.exec(text)) !== null) {
+    const word = m[0].replace(/['’]+$/, '');
+    if (word.length < 2) continue;
+    const from = m.index;
+    const to = from + word.length;
+    if (skipCaps && word === word.toUpperCase()) continue;
+    if (spellSkipContext(text, from, to)) continue;
+    if (spell.ignore.has(word.toLowerCase())) continue;
+    if (spellIsMisspelled(word)) found.push({ from, to, word });
+    if (++n % 400 === 0) {
+      await new Promise(r => setTimeout(r, 0));
+      if (myToken !== spell.token) return null;
+    }
+  }
+  return myToken === spell.token ? { found, text } : null;
+}
+
+function spellStatusText() {
+  if (spell.busy) return 'Scanning...';
+  const total = spell.occ.length;
+  if (total === 0) return 'No misspelled words';
+  const unique = new Set(spell.occ.map(o => o.word)).size;
+  const pos = spell.idx >= 0 ? `${spell.idx + 1} of ${total}` : `${total}`;
+  return `${pos} (${unique} word${unique === 1 ? '' : 's'})`;
+}
+
+function spellRenderList() {
+  const container = document.getElementById('spell-results');
+  container.innerHTML = '';
+  if (spell.occ.length === 0) {
+    container.innerHTML = '<div class="spell-empty">Nothing to fix.</div>';
+    return;
+  }
+  const counts = new Map();
+  for (const o of spell.occ) counts.set(o.word, (counts.get(o.word) || 0) + 1);
+  const cur = spell.occ[spell.idx];
+  for (const [word, count] of counts) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'spell-word-item' + (cur && cur.word === word ? ' current' : '');
+    b.innerHTML = `<span>${escapeHtml(word)}</span><span class="spell-count">${count}</span>`;
+    b.addEventListener('click', () => spellJumpToWord(word));
+    container.appendChild(b);
+  }
+}
+
+function spellSelectInEditor(o) {
+  if (proseMode) {
+    const textarea = document.getElementById('prose-editor');
+    textarea.focus();
+    textarea.setSelectionRange(o.from, o.to);
+  } else {
+    const view = activeView();
+    const len = view.state.doc.length;
+    const from = Math.min(o.from, len);
+    const to = Math.min(o.to, len);
+    view.dispatch({
+      selection: { anchor: from, head: to },
+      effects: EditorView.scrollIntoView(from, { y: 'center' }),
+    });
+  }
+}
+
+function spellShowCurrent(keepFocus) {
+  const ctx = document.getElementById('spell-context');
+  const replace = document.getElementById('spell-replace');
+  const sugg = document.getElementById('spell-suggestions');
+  const label = document.getElementById('spell-current-label');
+  const actions = document.querySelectorAll('#spell-actions button');
+  document.getElementById('spell-status').textContent = spellStatusText();
+  sugg.innerHTML = '';
+
+  const o = spell.occ[spell.idx];
+  if (!o) {
+    label.textContent = spell.busy ? 'SCANNING' : 'SPELL CHECK COMPLETE';
+    ctx.textContent = spell.busy ? '' : 'No misspelled words left.';
+    replace.value = '';
+    replace.disabled = true;
+    actions.forEach(b => { b.disabled = true; });
+    spellRenderList();
+    return;
+  }
+
+  label.textContent = 'NOT IN DICTIONARY';
+  replace.disabled = false;
+  actions.forEach(b => { b.disabled = false; });
+
+  const text = spellText();
+  const lineStart = Math.max(text.lastIndexOf('\n', o.from - 1) + 1, o.from - 70);
+  let lineEnd = text.indexOf('\n', o.to);
+  if (lineEnd === -1 || lineEnd > o.to + 70) lineEnd = Math.min(text.length, o.to + 70);
+  ctx.innerHTML = `${lineStart > 0 && text[lineStart - 1] !== '\n' ? '...' : ''}${escapeHtml(text.slice(lineStart, o.from))}<mark>${escapeHtml(o.word)}</mark>${escapeHtml(text.slice(o.to, lineEnd))}${lineEnd < text.length && text[lineEnd] !== '\n' ? '...' : ''}`;
+
+  let suggestions = [];
+  try {
+    suggestions = window.electronAPI.getWordSuggestions(o.word.replace(/’/g, "'")) || [];
+  } catch (e) {
+    suggestions = [];
+  }
+  suggestions.slice(0, 10).forEach(sg => {
+    const opt = document.createElement('option');
+    opt.value = sg;
+    opt.textContent = sg;
+    sugg.appendChild(opt);
+  });
+  if (suggestions.length) {
+    sugg.selectedIndex = 0;
+    replace.value = suggestions[0];
+  } else {
+    const opt = document.createElement('option');
+    opt.disabled = true;
+    opt.textContent = '(no suggestions)';
+    sugg.appendChild(opt);
+    replace.value = '';
+  }
+
+  spellSelectInEditor(o);
+  spellRenderList();
+  const cur = document.querySelector('#spell-results .current');
+  if (cur) cur.scrollIntoView({ block: 'nearest' });
+  if (keepFocus !== false) sugg.focus();
+}
+
+async function spellRescan(afterPos) {
+  spell.busy = true;
+  document.getElementById('spell-status').textContent = 'Scanning...';
+  const result = await spellScan();
+  if (!result) return;
+  spell.busy = false;
+  spell.occ = result.found;
+  let idx = spell.occ.findIndex(o => o.from >= afterPos);
+  if (idx === -1) idx = spell.occ.length ? 0 : -1;
+  spell.idx = idx;
+  spellShowCurrent();
+}
+
+function spellJumpToWord(word) {
+  const cur = spell.occ[spell.idx];
+  const pos = cur ? cur.from : 0;
+  let idx = spell.occ.findIndex(o => o.word === word && o.from >= pos);
+  if (idx === -1) idx = spell.occ.findIndex(o => o.word === word);
+  if (idx === -1) return;
+  spell.idx = idx;
+  spellShowCurrent();
+}
+
+// Applies edits (ascending, non overlapping) after checking that each
+// span still holds the word that was scanned. A mismatch means the text
+// changed since the scan, so nothing is written and the scan runs again.
+async function spellApply(edits) {
+  const text = spellText();
+  const stale = edits.some(e => text.slice(e.from, e.to) !== e.word);
+  if (stale) {
+    document.getElementById('spell-status').textContent = 'Text changed, re-scanning';
+    await spellRescan(0);
+    return false;
+  }
+  if (proseMode) {
+    const textarea = document.getElementById('prose-editor');
+    let out = text;
+    for (let i = edits.length - 1; i >= 0; i--) {
+      out = out.slice(0, edits[i].from) + edits[i].insert + out.slice(edits[i].to);
+    }
+    textarea.value = out;
+    markModified();
+  } else {
+    activeView().dispatch({
+      changes: edits.map(e => ({ from: e.from, to: e.to, insert: e.insert })),
+    });
+  }
+  return true;
+}
+
+async function spellChange(all) {
+  const o = spell.occ[spell.idx];
+  const replacement = document.getElementById('spell-replace').value.trim();
+  if (!o || !replacement || spell.busy) return;
+  const targets = all ? spell.occ.filter(x => x.word === o.word) : [o];
+  const edits = targets.map(t => ({ from: t.from, to: t.to, word: t.word, insert: replacement }));
+  const ok = await spellApply(edits);
+  if (ok) await spellRescan(o.from + replacement.length);
+}
+
+function spellIgnoreOnce() {
+  if (spell.busy || spell.occ.length === 0) return;
+  spell.idx = spell.idx + 1 < spell.occ.length ? spell.idx + 1 : 0;
+  spellShowCurrent();
+}
+
+async function spellIgnoreAll() {
+  const o = spell.occ[spell.idx];
+  if (!o || spell.busy) return;
+  spell.ignore.add(o.word.toLowerCase());
+  await spellRescan(o.to);
+}
+
+async function spellAddToDictionary() {
+  const o = spell.occ[spell.idx];
+  if (!o || spell.busy) return;
+  let saved = false;
+  try {
+    saved = await window.electronAPI.addSpellWord(o.word);
+  } catch (e) {
+    saved = false;
+  }
+  // Skipped for this session either way, so the word stops showing up.
+  spell.ignore.add(o.word.toLowerCase());
+  spell.cache.delete(o.word);
+  if (!saved) {
+    const note = document.getElementById('spell-note');
+    note.textContent = `"${o.word}" could not be saved to your dictionary. It is ignored until you close the app.`;
+    note.classList.remove('hidden');
+  }
+  await spellRescan(o.to);
+}
+
+function closeSpellPanel() {
+  spell.open = false;
+  spell.token++;
+  spell.busy = false;
+  document.getElementById('spell-panel').classList.add('hidden');
+  document.getElementById('btn-spell').classList.remove('active');
+  const view = proseMode ? document.getElementById('prose-editor') : activeView();
+  if (view && view.focus) view.focus();
+}
+
+async function openSpellCheck() {
+  if (!window.electronAPI || !window.electronAPI.isWordMisspelled) return;
+  document.getElementById('grammar-panel').classList.add('hidden');
+  document.getElementById('btn-grammar').classList.remove('active');
+  document.getElementById('closer-panel').classList.add('hidden');
+  document.getElementById('btn-closers').classList.remove('active');
+  refreshGrammarDecorations();
+
+  spell.open = true;
+  spell.cache.clear();
+  document.getElementById('spell-panel').classList.remove('hidden');
+  document.getElementById('btn-spell').classList.add('active');
+
+  const note = document.getElementById('spell-note');
+  note.classList.add('hidden');
+  try {
+    const info = await window.electronAPI.spellInfo();
+    const langs = info.languages.join(', ');
+    const missing = info.native ? [] : info.languages.filter(l => !info.ready.includes(l));
+    if (info.failed.length) {
+      note.textContent = `Dictionary download failed for ${info.failed.join(', ')}. Spell check needs an internet connection the first time. Results below may be incomplete.`;
+      note.classList.remove('hidden');
+    } else if (missing.length) {
+      note.textContent = `Checking with ${langs}. The dictionary may still be loading, so re-scan if nothing is flagged.`;
+      note.classList.remove('hidden');
+    }
+  } catch (e) {}
+
+  await spellRescan(0);
+  const sugg = document.getElementById('spell-suggestions');
+  if (spell.occ.length) sugg.focus();
+}
+
+function initSpellCheck() {
+  document.getElementById('btn-spell').addEventListener('click', () => {
+    if (spell.open) closeSpellPanel(); else openSpellCheck();
+  });
+  document.getElementById('spell-close').addEventListener('click', closeSpellPanel);
+  document.getElementById('spell-rerun').addEventListener('click', () => spellRescan(0));
+  document.getElementById('spell-change').addEventListener('click', () => spellChange(false));
+  document.getElementById('spell-change-all').addEventListener('click', () => spellChange(true));
+  document.getElementById('spell-ignore').addEventListener('click', spellIgnoreOnce);
+  document.getElementById('spell-ignore-all').addEventListener('click', spellIgnoreAll);
+  document.getElementById('spell-add').addEventListener('click', spellAddToDictionary);
+  document.getElementById('spell-skip-caps').addEventListener('change', () => spellRescan(0));
+  const sugg = document.getElementById('spell-suggestions');
+  const replace = document.getElementById('spell-replace');
+  sugg.addEventListener('change', () => {
+    if (sugg.value) replace.value = sugg.value;
+  });
+  sugg.addEventListener('dblclick', () => spellChange(false));
+  sugg.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); spellChange(false); }
+  });
+  replace.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); spellChange(false); }
+  });
+  document.getElementById('spell-panel').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); closeSpellPanel(); }
+  });
 }
 
 let proseFindMatches = [];
@@ -4842,6 +5186,7 @@ const commands = {
   'context-menu': () => openKeyboardContextMenu(),
   'toggle-prose': () => toggleProseMode(),
   'grammar-check': () => runGrammarCheck(),
+  'spell-check': () => openSpellCheck(),
   'compare': () => openCompare(),
   'focus-next': () => cycleFocus(1),
   'focus-prev': () => cycleFocus(-1),
@@ -4975,6 +5320,7 @@ const TOOLBAR_CATALOG = [
     { id: 'btn-autocap', label: 'AutoCap' },
     { id: 'btn-complete', label: 'Complete' },
     { id: 'btn-grammar', label: 'Grammar' },
+    { id: 'btn-spell', label: 'Spell' },
     { id: 'btn-compare', label: 'Compare' },
     { id: 'command-palette', label: 'Palette', title: 'Command Palette', cmd: 'command-palette' },
     { id: 'shortcuts', label: 'Keys', title: 'Keyboard Shortcuts', cmd: 'shortcuts' },
@@ -5764,6 +6110,7 @@ function wireEvents() {
     unfoldAll(activeView());
   });
   document.getElementById('btn-grammar').addEventListener('click', runGrammarCheck);
+  initSpellCheck();
   document.getElementById('grammar-close').addEventListener('click', closeGrammarPanel);
   document.getElementById('btn-closers').addEventListener('click', runCloserCheck);
   document.getElementById('closer-close').addEventListener('click', closeCloserPanel);

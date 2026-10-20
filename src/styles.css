@@ -1831,7 +1831,8 @@ body.dragging-split {
 
 /* Side panels (closers, grammar): zinc slabs with cadmium header blocks */
 #closer-panel,
-#grammar-panel {
+#grammar-panel,
+#spell-panel {
   width: 300px;
   flex-shrink: 0;
   display: flex;
@@ -1846,12 +1847,14 @@ body.dragging-split {
 }
 
 #closer-panel.hidden,
-#grammar-panel.hidden {
+#grammar-panel.hidden,
+#spell-panel.hidden {
   display: none;
 }
 
 #closer-header,
-#grammar-header {
+#grammar-header,
+#spell-header {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1868,7 +1871,8 @@ body.dragging-split {
 }
 
 #closer-status,
-#grammar-status {
+#grammar-status,
+#spell-status {
   flex: 1;
   font-weight: 600;
   letter-spacing: 0;
@@ -1880,7 +1884,9 @@ body.dragging-split {
 
 #closer-rerun,
 #closer-close,
-#grammar-close {
+#grammar-close,
+#spell-rerun,
+#spell-close {
   background: var(--ink);
   border: none;
   color: var(--white-chalk);
@@ -1892,7 +1898,9 @@ body.dragging-split {
 
 #closer-rerun:hover,
 #closer-close:hover,
-#grammar-close:hover {
+#grammar-close:hover,
+#spell-rerun:hover,
+#spell-close:hover {
   background: var(--ultra);
 }
 
@@ -2700,3 +2708,141 @@ body.dark-theme #grammar-results:focus {
 }
 body.dark-theme #editor-area.grid-view { background: var(--stroke); }
 body.dark-theme ::-webkit-scrollbar-track { background: var(--surface-2); }
+
+/* Spell check panel: current word, replacement, then every misspelled word */
+#spell-panel {
+  overflow-y: auto;
+}
+
+#spell-note {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-on-yellow);
+  background: var(--yel-lemon, var(--yel-cad));
+  border-bottom: 2px solid var(--stroke);
+}
+
+#spell-note.hidden {
+  display: none;
+}
+
+#spell-current {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 2px solid var(--stroke);
+}
+
+#spell-current-label,
+#spell-list-title {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--ink-2);
+}
+
+#spell-list-title {
+  padding: 8px 12px 4px;
+}
+
+#spell-context {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+#spell-context mark {
+  background: var(--yel-cad);
+  color: var(--text-on-yellow);
+  font-weight: 700;
+  padding: 0 2px;
+}
+
+#spell-replace,
+#spell-suggestions {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--surface-1, var(--surface-2));
+  border: 2px solid var(--stroke);
+  padding: 4px 6px;
+}
+
+#spell-suggestions {
+  min-height: 6.5em;
+}
+
+#spell-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+#spell-actions button {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  background: var(--surface-1, var(--surface-2));
+  border: 2px solid var(--stroke);
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+#spell-actions button:hover,
+#spell-actions button:focus-visible {
+  background: var(--yel-cad);
+  color: var(--text-on-yellow);
+}
+
+#spell-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+#spell-skip-caps-label {
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+#spell-results {
+  display: flex;
+  flex-direction: column;
+}
+
+.spell-word-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--stroke);
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+.spell-word-item:hover,
+.spell-word-item:focus-visible,
+.spell-word-item.current {
+  background: var(--yel-cad);
+  color: var(--text-on-yellow);
+}
+
+.spell-word-item .spell-count {
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.spell-empty {
+  padding: 12px;
+  color: var(--text-secondary, var(--ink-2));
+  text-align: center;
+}
