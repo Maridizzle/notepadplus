@@ -154,10 +154,14 @@
           <span id="link-map-status"></span>
           <label class="link-map-opt"><input type="checkbox" id="link-map-orphans"> Orphans</label>
           <label class="link-map-opt"><input type="checkbox" id="link-map-follow" checked> Follow active tab</label>
+          <label class="link-map-opt"><input type="checkbox" id="link-map-titles"> Use titles</label>
+          <label class="link-map-opt">Color by <select id="link-map-color" aria-label="Color nodes by metadata field"><option value="">None</option></select></label>
+          <input type="text" id="link-map-filter" placeholder="Filter by name or metadata" autocomplete="off" spellcheck="false" aria-label="Filter map by name or metadata">
           <button id="link-map-refresh" title="Rescan folder">&#8635;</button>
           <button id="link-map-close" title="Close (Esc)">&times;</button>
         </div>
         <svg id="link-map-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div id="link-map-colors" class="hidden" aria-label="Color key"></div>
         <div id="link-map-legend">
           <span><i class="lm-key lm-key-two"></i> links both ways</span>
           <span><i class="lm-key lm-key-one"></i> links one way</span>
