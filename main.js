@@ -9,6 +9,38 @@ let rendererReady = false;
 let closeConfirmed = false;
 let pendingOpenPaths = [];
 
+// Portable mode. electron-builder's portable Windows build sets
+// PORTABLE_EXECUTABLE_DIR to the folder holding the .exe. In that case keep
+// everything the app saves (session, recent files, learned words, settings,
+// and the spell checker's custom dictionary) in NotepadPlusData beside the
+// .exe, so it travels with a USB stick. Installed copies do not have the
+// variable and keep the normal per-user folder.
+//
+// If the folder cannot be created or written (a read-only stick), fall back
+// to the normal folder and tell the user once. Both paths are overridden
+// before the app is ready, which Electron requires for sessionData.
+function resolvePortableDataDir(env, fsApi, pathApi) {
+  const base = env.PORTABLE_EXECUTABLE_DIR;
+  if (!base) return { dir: null, target: null, failed: false };
+  const target = pathApi.join(base, 'NotepadPlusData');
+  try {
+    fsApi.mkdirSync(target, { recursive: true });
+    // A real write is the only reliable test on read-only media. The marker
+    // file is rewritten each run and left in place.
+    fsApi.writeFileSync(pathApi.join(target, 'portable.txt'),
+      'NotepadPlus keeps its settings, session, and dictionary in this folder when run as the portable .exe.\n');
+    return { dir: target, target, failed: false };
+  } catch (e) {
+    return { dir: null, target, failed: true };
+  }
+}
+
+const portable = resolvePortableDataDir(process.env, fs, path);
+if (portable.dir) {
+  app.setPath('userData', portable.dir);
+  app.setPath('sessionData', portable.dir);
+}
+
 const sessionFile = path.join(app.getPath('userData'), 'session.json');
 const recentFile = path.join(app.getPath('userData'), 'recent.json');
 const learnedWordsFile = path.join(app.getPath('userData'), 'learned-words.json');
@@ -1216,6 +1248,14 @@ ipcMain.handle('shell-open-path', async (event, { filePath }) => {
 app.whenReady().then(() => {
   loadRecentFiles();
   createWindow();
+  if (portable.failed) {
+    dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: 'Portable mode',
+      message: 'NotepadPlus could not save next to the program.',
+      detail: `The folder ${portable.target} could not be created or written to. The drive may be read-only. Your settings, session, and dictionary for this run are saved on this PC instead.`,
+    });
+  }
 });
 
 app.on('window-all-closed', () => {
