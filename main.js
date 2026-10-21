@@ -44,6 +44,7 @@ if (portable.dir) {
 const sessionFile = path.join(app.getPath('userData'), 'session.json');
 const recentFile = path.join(app.getPath('userData'), 'recent.json');
 const learnedWordsFile = path.join(app.getPath('userData'), 'learned-words.json');
+const customWordsFile = path.join(app.getPath('userData'), 'custom-words.json');
 
 function loadRecentFiles() {
   try {
@@ -614,6 +615,7 @@ function menuTemplateFor(cmd) {
       submenu: [
         cmd('Keyboard Shortcuts...', 'shortcuts', { accelerator: 'F1' }),
         cmd('Command Palette...', 'command-palette', { accelerator: 'CmdOrCtrl+Shift+P' }),
+        cmd('Third-Party Notices...', 'show-notices'),
         { type: 'separator' },
         {
           label: 'About NotepadPlus',
@@ -684,7 +686,6 @@ function createWindow() {
     },
   });
 
-  watchSpellDictionaries(mainWindow.webContents.session);
 
   mainWindow.webContents.on('context-menu', (event, params) => {
     if (params.misspelledWord) {
@@ -1107,32 +1108,38 @@ ipcMain.handle('save-learned-words', async (event, words) => {
   }
 });
 
-// Spell check mode asks the renderer's built-in checker about each word.
-// The Hunspell dictionary on Windows and Linux is downloaded on first use,
-// so track whether it is actually loaded and say so instead of reporting a
-// clean document.
-const spellDictState = { ready: new Set(), failed: new Set() };
-
-function watchSpellDictionaries(ses) {
-  ses.on('spellcheck-dictionary-initialized', (event, lang) => {
-    spellDictState.ready.add(lang);
-    spellDictState.failed.delete(lang);
-  });
-  ses.on('spellcheck-dictionary-download-failure', (event, lang) => {
-    spellDictState.failed.add(lang);
-  });
+// Words added to the Spell Check dictionary. Kept in the data folder (the
+// NotepadPlusData folder in the portable build) so they travel with it.
+function readCustomWords() {
+  try {
+    const data = JSON.parse(fs.readFileSync(customWordsFile, 'utf-8'));
+    return Array.isArray(data) ? data.filter(w => typeof w === 'string') : [];
+  } catch (e) {
+    return [];
+  }
 }
 
-ipcMain.handle('spell-info', async () => {
-  if (!mainWindow) return { languages: [], ready: [], failed: [] };
-  const ses = mainWindow.webContents.session;
-  const languages = ses.getSpellCheckerLanguages();
-  return {
-    languages: languages.length ? languages : ['en-US'],
-    ready: [...spellDictState.ready],
-    failed: [...spellDictState.failed],
-    native: process.platform === 'darwin',
-  };
+ipcMain.handle('get-custom-words', async () => readCustomWords());
+
+ipcMain.handle('add-custom-word', async (event, word) => {
+  if (typeof word !== 'string' || !word.trim() || word.length > 100) return false;
+  try {
+    const words = readCustomWords();
+    if (!words.includes(word.trim())) words.push(word.trim());
+    fs.writeFileSync(customWordsFile, JSON.stringify(words));
+    return true;
+  } catch (e) {
+    return false;
+  }
+});
+
+// The license text that must accompany the bundled spelling dictionary.
+ipcMain.handle('read-notices', async () => {
+  try {
+    return fs.readFileSync(path.join(__dirname, 'THIRD_PARTY_NOTICES.txt'), 'utf-8');
+  } catch (e) {
+    return null;
+  }
 });
 
 ipcMain.handle('spell-add-word', async (event, word) => {

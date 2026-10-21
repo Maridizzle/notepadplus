@@ -7,6 +7,7 @@ const thisDir = __dirname;
 const filesToCopy = [
   'main.js',
   'preload.js',
+  'THIRD_PARTY_NOTICES.txt',
 ];
 
 const dirsToCopy = [

@@ -67,6 +67,9 @@ import * as Diff from 'diff';
 import { isTriggerChar, computeFix, wordBefore, spacingAction } from './autocap.js';
 import { MIN_PREFIX, suggest, learnWord, loadLearned, exportLearned, takeLearnedDirty } from './complete.js';
 import * as fm from './frontmatter.mjs';
+import nspell from 'nspell';
+import DICT_AFF from '../node_modules/dictionary-en/index.aff';
+import DICT_DIC from '../node_modules/dictionary-en/index.dic';
 
 const stream = (mode) => () => StreamLanguage.define(mode);
 
@@ -3189,7 +3192,7 @@ function applyGrammarFix(match, index) {
 
 // ---- Spell check mode ----
 // Word-style walk-through. Scans the document with the built-in checker
-// (webFrame.isWordMisspelled, exposed by the preload), steps through each
+// (a bundled English (US) Hunspell dictionary run by nspell), steps through each
 // hit with suggestions, and lists every misspelled word with a count.
 // The checker reports on single words only, so words are cut out here.
 const SPELL_WORD_RE = /\p{L}[\p{L}'’]*/gu;
@@ -3209,14 +3212,35 @@ function spellText() {
     : activeView().state.doc.toString();
 }
 
+// The engine is built once, on first use, after the panel has painted. It
+// does not depend on Electron's built-in checker, so it behaves the same on
+// every platform and needs no dictionary download. Words saved with Add to
+// Dictionary come from the data folder.
+let spellEngine = null;
+let spellEnginePromise = null;
+
+function getSpellEngine() {
+  if (spellEngine) return Promise.resolve(spellEngine);
+  if (!spellEnginePromise) {
+    spellEnginePromise = new Promise(resolve => setTimeout(async () => {
+      const engine = nspell({ aff: DICT_AFF, dic: DICT_DIC });
+      let words = [];
+      try {
+        words = (await window.electronAPI.getCustomWords()) || [];
+      } catch (e) {
+        words = [];
+      }
+      for (const w of words) engine.add(w);
+      spellEngine = engine;
+      resolve(engine);
+    }, 0));
+  }
+  return spellEnginePromise;
+}
+
 function spellIsMisspelled(word) {
   if (spell.cache.has(word)) return spell.cache.get(word);
-  let bad = false;
-  try {
-    bad = !!window.electronAPI.isWordMisspelled(word.replace(/’/g, "'"));
-  } catch (e) {
-    bad = false;
-  }
+  const bad = spellEngine ? !spellEngine.correct(word.replace(/’/g, "'")) : false;
   spell.cache.set(word, bad);
   return bad;
 }
@@ -3228,6 +3252,8 @@ function spellSkipContext(text, from, to) {
   const after = text[to];
   if (before && /[\/\\@#_$%0-9]/.test(before)) return true;
   if (after && /[\/\\@_0-9]/.test(after)) return true;
+  // The scheme at the start of a URL: https://, ftp://, file://
+  if (text.slice(to, to + 3) === '://') return true;
   if (before === '.' && from > 1 && /\p{L}/u.test(text[from - 2])) return true;
   if (after === '.' && /\p{L}/u.test(text[to + 1] || '')) return true;
   return false;
@@ -3336,7 +3362,7 @@ function spellShowCurrent(keepFocus) {
 
   let suggestions = [];
   try {
-    suggestions = window.electronAPI.getWordSuggestions(o.word.replace(/’/g, "'")) || [];
+    suggestions = spellEngine ? spellEngine.suggest(o.word.replace(/’/g, "'")) : [];
   } catch (e) {
     suggestions = [];
   }
@@ -3440,19 +3466,22 @@ async function spellIgnoreAll() {
 async function spellAddToDictionary() {
   const o = spell.occ[spell.idx];
   if (!o || spell.busy) return;
+  const word = o.word.replace(/’/g, "'");
+  if (spellEngine) spellEngine.add(word);
   let saved = false;
   try {
-    saved = await window.electronAPI.addSpellWord(o.word);
+    saved = await window.electronAPI.addCustomWord(word);
+    // Also tell the system checker, so the red underline in the editor goes.
+    if (window.electronAPI.addSpellWord) await window.electronAPI.addSpellWord(word);
   } catch (e) {
     saved = false;
   }
-  // Skipped for this session either way, so the word stops showing up.
-  spell.ignore.add(o.word.toLowerCase());
   spell.cache.delete(o.word);
   if (!saved) {
     const note = document.getElementById('spell-note');
     note.textContent = `"${o.word}" could not be saved to your dictionary. It is ignored until you close the app.`;
     note.classList.remove('hidden');
+    spell.ignore.add(o.word.toLowerCase());
   }
   await spellRescan(o.to);
 }
@@ -3468,7 +3497,6 @@ function closeSpellPanel() {
 }
 
 async function openSpellCheck() {
-  if (!window.electronAPI || !window.electronAPI.isWordMisspelled) return;
   document.getElementById('grammar-panel').classList.add('hidden');
   document.getElementById('btn-grammar').classList.remove('active');
   document.getElementById('closer-panel').classList.add('hidden');
@@ -3480,22 +3508,11 @@ async function openSpellCheck() {
   spell.cache.clear();
   document.getElementById('spell-panel').classList.remove('hidden');
   document.getElementById('btn-spell').classList.add('active');
+  document.getElementById('spell-note').classList.add('hidden');
+  document.getElementById('spell-status').textContent = 'Loading dictionary...';
 
-  const note = document.getElementById('spell-note');
-  note.classList.add('hidden');
-  try {
-    const info = await window.electronAPI.spellInfo();
-    const langs = info.languages.join(', ');
-    const missing = info.native ? [] : info.languages.filter(l => !info.ready.includes(l));
-    if (info.failed.length) {
-      note.textContent = `Dictionary download failed for ${info.failed.join(', ')}. Spell check needs an internet connection the first time. Results below may be incomplete.`;
-      note.classList.remove('hidden');
-    } else if (missing.length) {
-      note.textContent = `Checking with ${langs}. The dictionary may still be loading, so re-scan if nothing is flagged.`;
-      note.classList.remove('hidden');
-    }
-  } catch (e) {}
-
+  await getSpellEngine();
+  if (!spell.open) return;
   await spellRescan(0);
   const sugg = document.getElementById('spell-suggestions');
   if (spell.occ.length) sugg.focus();
@@ -5506,6 +5523,14 @@ const commands = {
   'toggle-prose': () => toggleProseMode(),
   'grammar-check': () => runGrammarCheck(),
   'spell-check': () => openSpellCheck(),
+  'show-notices': async () => {
+    const text = window.electronAPI.readNotices ? await window.electronAPI.readNotices() : null;
+    if (!text) {
+      window.electronAPI.showError({ title: 'Third-Party Notices', message: 'The notices file could not be read.' });
+      return;
+    }
+    createTab(null, text, { title: 'Third-Party Notices', language: 'plain' });
+  },
   'meta-panel': () => toggleMetaPanel(),
   'compare': () => openCompare(),
   'focus-next': () => cycleFocus(1),

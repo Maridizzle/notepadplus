@@ -43,7 +43,9 @@
     "@codemirror/theme-one-dark": "^6.1.2",
     "@codemirror/view": "^6.34.0",
     "codemirror": "^6.0.1",
-    "diff": "^9.0.0"
+    "dictionary-en": "^4.0.0",
+    "diff": "^9.0.0",
+    "nspell": "^2.1.5"
   },
   "build": {
     "appId": "com.maridizzle.notepadplus",
@@ -51,6 +53,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "THIRD_PARTY_NOTICES.txt",
       "src/index.html",
       "src/styles.css",
       "src/dist/**/*"
