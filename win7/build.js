@@ -8,4 +8,6 @@ esbuild.build({
   platform: 'browser',
   target: 'chrome108',
   sourcemap: true,
+  // The spell checker's dictionary files are loaded as text.
+  loader: { '.aff': 'text', '.dic': 'text' },
 }).catch(() => process.exit(1));

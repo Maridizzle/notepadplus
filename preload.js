@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer, webUtils, webFrame } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   getPathForFile: (file) =>
@@ -33,10 +33,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveLearnedWords: (words) => ipcRenderer.invoke('save-learned-words', words),
   setTitle: (data) => ipcRenderer.invoke('set-title', data),
   checkGrammar: (data) => ipcRenderer.invoke('check-grammar', data),
-  isWordMisspelled: (word) => webFrame.isWordMisspelled(word),
-  getWordSuggestions: (word) => webFrame.getWordSuggestions(word),
-  spellInfo: () => ipcRenderer.invoke('spell-info'),
   addSpellWord: (word) => ipcRenderer.invoke('spell-add-word', word),
+  getCustomWords: () => ipcRenderer.invoke('get-custom-words'),
+  addCustomWord: (word) => ipcRenderer.invoke('add-custom-word', word),
+  readNotices: () => ipcRenderer.invoke('read-notices'),
   saveSession: (data) => ipcRenderer.send('save-session', data),
 
   onFileOpened: (callback) => ipcRenderer.on('file-opened', (event, data) => callback(data)),
