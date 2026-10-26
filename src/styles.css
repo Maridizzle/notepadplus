@@ -2717,6 +2717,556 @@ body.dark-theme #grammar-results:focus {
 body.dark-theme #editor-area.grid-view { background: var(--stroke); }
 body.dark-theme ::-webkit-scrollbar-track { background: var(--surface-2); }
 
+/* Anahata: emerald light breathing outward into sage and celadon. The same
+   geometry as Noon and Dusk, but the planes are translucent washes with soft
+   edges instead of opaque cut pigment, and the surface is moss and petal
+   rather than palette-knife ridges. Pale jade and soft gold run through the
+   chrome as thin veins. Editor text areas stay calm. */
+body.anahata-theme {
+  /* Pigments */
+  --em-core: #0f7a55;
+  --em: #1e8f66;
+  --em-deep: #0b5a3f;
+  --em-glow: #35b184;
+  --jade: #8fd3b2;
+  --jade-pale: #cdeedc;
+  --celadon: #b7d6c3;
+  --sage: #9db9a3;
+  --sage-light: #d6e4d6;
+  --petal: #eef6ee;
+  --petal-chalk: #f6fbf5;
+  --gold-soft: #d8b86a;
+  --gold-thread: #ecd99a;
+  --moss-ink: #16302a;
+  --moss-ink-2: #3c5a50;
+
+  /* Roles */
+  --ground: var(--sage-light);
+  --paper: #f1f8f1;
+  --surface: var(--petal);
+  --surface-2: var(--sage-light);
+  --surface-3: var(--celadon);
+  --hover: var(--jade-pale);
+  --text-primary: #1b3a32;
+  --text-secondary: #4d6e63;
+  --text-active: #0f2a23;
+  --text-on-yellow: #0f2a23;
+  --accent: var(--em);
+  --accent-hover: var(--em-glow);
+  --bounce: var(--gold-soft);
+  --bounce-soft: var(--gold-thread);
+  --stroke: var(--moss-ink);
+  --char-black: var(--moss-ink);
+  --border: var(--moss-ink);
+  --ink: var(--moss-ink);
+  --ink-2: var(--moss-ink-2);
+  --modified-dot: var(--gold-soft);
+  --tab-active-bg: var(--em);
+  --tab-inactive-bg: var(--celadon);
+  --gutter-bg: #e2eee3;
+  --gutter-text: #5a7d6f;
+  --amber-glow: rgba(216, 184, 106, 0.35);
+  --slab-shadow: 3px 3px 0 rgba(30, 143, 102, 0.5);
+  --slab-shadow-lg: 8px 8px 0 rgba(143, 211, 178, 0.75);
+  --dialog-overlay: rgba(11, 90, 63, 0.38);
+
+  /* The pigments the base sheet names directly, re-pointed so every rule that
+     still says yellow, white, ultramarine or violet lands in green. */
+  --yel-cad: var(--em);
+  --yel-lemon: var(--jade-pale);
+  --yel-gold: var(--gold-soft);
+  --yel-ochre: var(--sage);
+  --yel-deep: var(--em-deep);
+  --white-t: var(--petal);
+  --white-z: var(--sage-light);
+  --white-cream: var(--jade-pale);
+  --white-chalk: var(--petal-chalk);
+  --ultra: var(--em-deep);
+  --ultra-soft: var(--jade);
+  --violet: var(--gold-soft);
+  --violet-soft: var(--gold-thread);
+  --vermilion: var(--gold-soft);
+
+  /* Textures: moss (fine lit grain), veins (iso-contours of a slow noise
+     pulled out as thin jade and gold threads), breath (an emerald light that
+     expands from the core and thins at the edges). */
+  --moss-light: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='m' x='0' y='0' width='100%' height='100%'><feTurbulence type='fractalNoise' baseFrequency='0.07' numOctaves='4' seed='7' stitchTiles='stitch' result='n'/><feDiffuseLighting in='n' lighting-color='white' surfaceScale='3' diffuseConstant='1' result='l'><feDistantLight azimuth='120' elevation='38'/></feDiffuseLighting><feColorMatrix in='l' type='matrix' values='0 0 0 0 0.97  0 0 0 0 1  0 0 0 0 0.95  0.34 0.34 0.34 0 -0.34'/></filter><rect width='220' height='220' filter='url(%23m)'/></svg>");
+  --moss-shade: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='m' x='0' y='0' width='100%' height='100%'><feTurbulence type='fractalNoise' baseFrequency='0.07' numOctaves='4' seed='7' stitchTiles='stitch' result='n'/><feDiffuseLighting in='n' lighting-color='white' surfaceScale='3' diffuseConstant='1' result='l'><feDistantLight azimuth='120' elevation='38'/></feDiffuseLighting><feColorMatrix in='l' type='matrix' values='0 0 0 0 0.05  0 0 0 0 0.2  0 0 0 0 0.14  -0.3 -0.3 -0.3 0 0.34'/></filter><rect width='220' height='220' filter='url(%23m)'/></svg>");
+  --petal-skin: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='360' height='360'><filter id='s' x='0' y='0' width='100%' height='100%'><feTurbulence type='fractalNoise' baseFrequency='0.016' numOctaves='2' seed='23' stitchTiles='stitch' result='n'/><feDiffuseLighting in='n' lighting-color='white' surfaceScale='6' diffuseConstant='1' result='l'><feDistantLight azimuth='300' elevation='28'/></feDiffuseLighting><feColorMatrix in='l' type='matrix' values='0 0 0 0 0.12  0 0 0 0 0.45  0 0 0 0 0.32  -0.22 -0.22 -0.22 0 0.22'/></filter><rect width='360' height='360' filter='url(%23s)'/></svg>");
+  --veins-jade: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='420' height='420'><filter id='v' x='0' y='0' width='100%' height='100%'><feTurbulence type='fractalNoise' baseFrequency='0.0075' numOctaves='3' seed='3' stitchTiles='stitch' result='n'/><feColorMatrix in='n' type='matrix' values='0 0 0 0 0.86  0 0 0 0 0.97  0 0 0 0 0.9  7 0 0 0 -3' result='c'/><feComponentTransfer in='c'><feFuncA type='table' tableValues='0 0 0 0 0 0 0 0 0 0 0 0.75 0 0 0 0 0 0 0 0.9 0 0 0 0 0 0 0 0.75 0 0 0 0 0 0 0 0 0 0 0 0 0'/></feComponentTransfer></filter><rect width='420' height='420' filter='url(%23v)'/></svg>");
+  --veins-gold: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='520' height='520'><filter id='v' x='0' y='0' width='100%' height='100%'><feTurbulence type='fractalNoise' baseFrequency='0.006' numOctaves='3' seed='19' stitchTiles='stitch' result='n'/><feColorMatrix in='n' type='matrix' values='0 0 0 0 0.95  0 0 0 0 0.84  0 0 0 0 0.5  7 0 0 0 -3' result='c'/><feComponentTransfer in='c'><feFuncA type='table' tableValues='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.7 0 0 0 0 0 0 0 0 0 0 0.7 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'/></feComponentTransfer></filter><rect width='520' height='520' filter='url(%23v)'/></svg>");
+  --breath: radial-gradient(ellipse 85% 75% at 50% 42%, rgba(15, 122, 85, 0.28) 0%, rgba(30, 143, 102, 0.14) 38%, rgba(157, 185, 163, 0.08) 68%, transparent 100%);
+  --breath-strong: radial-gradient(ellipse 70% 90% at 50% 50%, rgba(53, 177, 132, 0.55) 0%, rgba(15, 122, 85, 0.35) 45%, transparent 100%);
+
+  --impasto-light: var(--moss-light);
+  --impasto-dark: var(--moss-shade);
+  --grain: var(--moss-light);
+  --knife: var(--veins-jade);
+  --strokes: var(--veins-gold);
+}
+
+body.anahata-theme {
+  background:
+    var(--moss-light),
+    var(--moss-shade),
+    var(--veins-jade),
+    var(--petal-skin),
+    var(--breath),
+    var(--ground);
+}
+
+body.anahata-theme ::-webkit-scrollbar-track {
+  background: var(--sage-light);
+}
+
+body.anahata-theme ::-webkit-scrollbar-thumb {
+  background:
+    linear-gradient(118deg, var(--jade-pale) 0 24%, transparent 36%),
+    var(--em);
+}
+
+body.anahata-theme ::-webkit-scrollbar-thumb:hover {
+  background: var(--em-glow);
+}
+
+/* Toolbar: emerald light rising from the left and thinning to celadon at the
+   right edge, a jade vein across the middle, a thread of gold at the far end. */
+body.anahata-theme #toolbar {
+  background:
+    var(--moss-light),
+    var(--moss-shade),
+    var(--veins-jade),
+    var(--veins-gold),
+    var(--petal-skin),
+    linear-gradient(112deg, rgba(15, 122, 85, 0.55) 0 12%, rgba(30, 143, 102, 0.3) 22%, transparent 36%),
+    linear-gradient(-16deg, transparent 0 56%, rgba(143, 211, 178, 0.45) 62% 70%, transparent 76%),
+    linear-gradient(-64deg, transparent 0 88%, rgba(216, 184, 106, 0.5) 93%),
+    linear-gradient(20deg, transparent 0 72%, rgba(246, 251, 245, 0.6) 78% 84%, transparent 90%),
+    var(--celadon);
+}
+
+body.anahata-theme #toolbar button {
+  background:
+    linear-gradient(118deg, rgba(143, 211, 178, 0.65) 0 18%, transparent 34%),
+    var(--petal);
+  color: var(--text-active);
+}
+
+body.anahata-theme #toolbar button:hover {
+  background:
+    linear-gradient(118deg, rgba(236, 217, 154, 0.8) 0 48%, transparent 64%),
+    var(--petal-chalk);
+  box-shadow: 4px 4px 0 var(--gold-soft);
+}
+
+body.anahata-theme #toolbar button:active {
+  background: var(--jade);
+}
+
+body.anahata-theme #toolbar button.active {
+  background:
+    linear-gradient(-24deg, rgba(246, 251, 245, 0.35) 0 16%, transparent 30%),
+    var(--em);
+  color: var(--petal-chalk);
+  box-shadow: 3px 3px 0 var(--gold-soft);
+}
+
+body.anahata-theme .toolbar-separator {
+  background: linear-gradient(170deg, var(--em-deep) 0 45%, var(--gold-thread) 45% 55%, var(--em-deep) 55%);
+}
+
+body.anahata-theme .toolbar-label {
+  color: var(--petal-chalk);
+  background: var(--em-deep);
+}
+
+body.anahata-theme #font-select {
+  background:
+    linear-gradient(118deg, rgba(246, 251, 245, 0.9) 0 18%, transparent 34%),
+    var(--jade-pale);
+  color: var(--text-primary);
+}
+
+body.anahata-theme #font-select:hover {
+  background: var(--gold-thread);
+}
+
+body.anahata-theme #autosave-indicator {
+  color: var(--gold-thread);
+  background: var(--moss-ink);
+}
+
+/* Tab bar: sage ground, a soft emerald wash low on the left, chalk at the right */
+body.anahata-theme #tab-bar {
+  background:
+    var(--moss-light),
+    var(--moss-shade),
+    var(--veins-gold),
+    var(--petal-skin),
+    linear-gradient(-8deg, rgba(15, 122, 85, 0.35) 0 10%, transparent 26%),
+    linear-gradient(96deg, transparent 0 78%, rgba(246, 251, 245, 0.7) 90%),
+    var(--sage-light);
+}
+
+body.anahata-theme .tab {
+  color: var(--text-secondary);
+}
+
+body.anahata-theme .tab:hover {
+  background:
+    linear-gradient(118deg, rgba(236, 217, 154, 0.7) 0 30%, transparent 50%),
+    var(--petal);
+  color: var(--text-active);
+}
+
+body.anahata-theme .tab.active {
+  background:
+    linear-gradient(-26deg, rgba(246, 251, 245, 0.3) 0 14%, transparent 30%),
+    var(--em);
+  color: var(--petal-chalk);
+}
+
+body.anahata-theme .tab .tab-close:hover {
+  background: var(--moss-ink);
+  color: var(--gold-thread);
+}
+
+body.anahata-theme #tab-context-menu {
+  background:
+    var(--moss-light),
+    linear-gradient(112deg, rgba(143, 211, 178, 0.7) 0 6%, transparent 14%),
+    var(--petal);
+  box-shadow: 6px 6px 0 rgba(143, 211, 178, 0.75);
+}
+
+/* Sidebar: an emerald wedge breathing in from the top corner, sage below,
+   a gold thread at the bottom edge. */
+body.anahata-theme #sidebar {
+  background:
+    var(--moss-light),
+    var(--moss-shade),
+    var(--veins-jade),
+    var(--veins-gold),
+    var(--petal-skin),
+    linear-gradient(158deg, rgba(15, 122, 85, 0.6) 0 30px, rgba(30, 143, 102, 0.22) 52px, transparent 90px),
+    linear-gradient(-32deg, transparent 0 86%, rgba(246, 251, 245, 0.6) 94%),
+    linear-gradient(76deg, transparent 0 92%, rgba(216, 184, 106, 0.45) 97%),
+    var(--sage-light);
+}
+
+body.anahata-theme #sidebar-header {
+  background:
+    var(--moss-light),
+    linear-gradient(112deg, rgba(15, 122, 85, 0.75) 0 28%, rgba(30, 143, 102, 0.3) 40%, transparent 52%),
+    linear-gradient(-14deg, transparent 0 68%, rgba(246, 251, 245, 0.7) 78%),
+    var(--jade-pale);
+  color: var(--text-active);
+}
+
+body.anahata-theme #sidebar-header button {
+  background: var(--moss-ink);
+  color: var(--gold-thread);
+}
+
+body.anahata-theme #sidebar-header button:hover {
+  background: var(--em);
+  color: var(--petal-chalk);
+}
+
+body.anahata-theme #sidebar-tabs {
+  background: var(--petal);
+}
+
+body.anahata-theme .sidebar-tab:hover {
+  color: var(--text-active);
+  background: var(--gold-thread);
+}
+
+body.anahata-theme .sidebar-tab.active {
+  color: var(--petal-chalk);
+  border-bottom-color: var(--gold-soft);
+  background:
+    linear-gradient(112deg, rgba(246, 251, 245, 0.25) 0 20%, transparent 36%),
+    var(--em);
+}
+
+body.anahata-theme .tree-item:hover,
+body.anahata-theme .recent-item:hover,
+body.anahata-theme .fn-item:hover,
+body.anahata-theme .sr-file:hover,
+body.anahata-theme .sr-match:hover,
+body.anahata-theme .grammar-item:hover {
+  background: var(--hover);
+}
+
+body.anahata-theme .tree-item.active {
+  background: var(--em);
+  color: var(--petal-chalk);
+}
+
+body.anahata-theme .tree-item .tree-icon.folder,
+body.anahata-theme .fn-kind,
+body.anahata-theme .sr-file {
+  color: var(--em-deep);
+}
+
+body.anahata-theme .tree-item .tree-icon.file {
+  color: var(--gold-soft);
+}
+
+/* Editor: calm petal paper, a celadon gutter with a thin emerald edge,
+   gold for the active line and the cursor. */
+body.anahata-theme .cm-editor .cm-gutters {
+  background:
+    linear-gradient(-6deg, transparent 0 95%, rgba(143, 211, 178, 0.55) 97%),
+    var(--gutter-bg);
+  color: var(--gutter-text);
+}
+
+body.anahata-theme .cm-editor .cm-activeLineGutter {
+  background: var(--gold-thread);
+  color: var(--text-active);
+}
+
+body.anahata-theme .cm-editor .cm-activeLine {
+  background: rgba(216, 184, 106, 0.14);
+}
+
+body.anahata-theme .cm-editor .cm-cursor {
+  border-left-color: var(--em-core);
+}
+
+body.anahata-theme .cm-editor .cm-selectionBackground,
+body.anahata-theme .cm-editor.cm-focused .cm-selectionBackground {
+  background: rgba(143, 211, 178, 0.5) !important;
+}
+
+body.anahata-theme .cm-editor .cm-searchMatch {
+  background-color: rgba(236, 217, 154, 0.75);
+  outline-color: var(--gold-soft);
+}
+
+body.anahata-theme .cm-editor .cm-searchMatch.cm-searchMatch-selected {
+  background-color: var(--gold-soft);
+  outline-color: var(--em-deep);
+}
+
+body.anahata-theme .cm-wiki-link {
+  color: var(--em-deep);
+  text-decoration-color: var(--gold-soft);
+}
+
+body.anahata-theme .cm-wiki-link:hover {
+  color: var(--petal-chalk);
+  background: var(--em);
+}
+
+body.anahata-theme .cm-wiki-bracket {
+  color: var(--sage);
+}
+
+/* Status bar: the emerald core, luminous, with a petal block cutting across
+   and a gold thread near the right edge. */
+body.anahata-theme #status-bar {
+  background:
+    var(--moss-light),
+    var(--moss-shade),
+    var(--petal-skin),
+    linear-gradient(-112deg, rgba(11, 90, 63, 0.9) 0 7%, transparent 14%),
+    linear-gradient(104deg, transparent 0 32%, rgba(205, 238, 220, 0.5) 38% 50%, transparent 56%),
+    linear-gradient(-30deg, transparent 0 76%, rgba(236, 217, 154, 0.45) 80% 86%, transparent 90%),
+    var(--breath-strong),
+    var(--em);
+  color: var(--petal-chalk);
+  text-shadow: 0 1px 0 rgba(11, 90, 63, 0.6);
+}
+
+body.anahata-theme #status-bar #status-file,
+body.anahata-theme #status-bar #status-modified {
+  color: var(--text-active);
+  text-shadow: none;
+}
+
+body.anahata-theme #status-position {
+  background: var(--moss-ink);
+  color: var(--gold-thread);
+}
+
+/* Dialogs: petal slab, an emerald wash in the top corner, a jade cast shadow */
+body.anahata-theme .dialog-box {
+  background:
+    var(--moss-light),
+    var(--moss-shade),
+    var(--veins-jade),
+    var(--petal-skin),
+    linear-gradient(112deg, rgba(15, 122, 85, 0.6) 0 26px, rgba(30, 143, 102, 0.2) 46px, transparent 78px),
+    linear-gradient(-40deg, transparent 0 86%, rgba(236, 217, 154, 0.75) 94%),
+    linear-gradient(0deg, transparent 0 95%, rgba(143, 211, 178, 0.8) 98%),
+    var(--petal);
+}
+
+body.anahata-theme .dialog-box input,
+body.anahata-theme .palette-list,
+body.anahata-theme #prose-find-bar input {
+  background: var(--petal-chalk);
+  color: var(--text-active);
+}
+
+body.anahata-theme .dialog-box input:focus {
+  border-color: var(--em);
+  box-shadow: 3px 3px 0 var(--gold-thread);
+}
+
+body.anahata-theme .dialog-buttons button:first-child {
+  background:
+    linear-gradient(-24deg, rgba(246, 251, 245, 0.3) 0 16%, transparent 30%),
+    var(--em);
+  color: var(--petal-chalk);
+}
+
+body.anahata-theme .dialog-buttons button:first-child:hover {
+  background: var(--em-glow);
+  box-shadow: 4px 4px 0 var(--gold-soft);
+}
+
+body.anahata-theme .dialog-buttons button:last-child,
+body.anahata-theme .dialog-row button,
+body.anahata-theme .grammar-item-fix,
+body.anahata-theme #prose-find-bar button,
+body.anahata-theme .dialog-buttons button.dialog-secondary:first-child {
+  background:
+    linear-gradient(118deg, rgba(143, 211, 178, 0.6) 0 14%, transparent 28%),
+    var(--petal);
+  color: var(--text-primary);
+}
+
+body.anahata-theme .dialog-buttons button:hover,
+body.anahata-theme .dialog-row button:hover,
+body.anahata-theme .grammar-item-fix:hover,
+body.anahata-theme #prose-find-bar button:hover {
+  background: var(--gold-thread);
+  color: var(--text-active);
+}
+
+body.anahata-theme #search-results,
+body.anahata-theme #closer-panel,
+body.anahata-theme #grammar-panel {
+  background:
+    var(--moss-light),
+    var(--veins-gold),
+    linear-gradient(-6deg, transparent 0 86%, rgba(30, 143, 102, 0.5) 94%),
+    var(--sage-light);
+}
+
+body.anahata-theme #closer-options {
+  background: var(--petal);
+}
+
+body.anahata-theme #minimap {
+  background:
+    var(--moss-light),
+    linear-gradient(-80deg, transparent 0 82%, rgba(30, 143, 102, 0.55) 92%),
+    var(--sage-light);
+}
+
+body.anahata-theme .minimap-viewport {
+  background: rgba(143, 211, 178, 0.35);
+  border-color: var(--gold-soft);
+}
+
+body.anahata-theme #compare-bar,
+body.anahata-theme #prose-find-bar {
+  background:
+    linear-gradient(112deg, rgba(15, 122, 85, 0.6) 0 10%, transparent 22%),
+    linear-gradient(-20deg, transparent 0 84%, rgba(216, 184, 106, 0.5) 92%),
+    var(--petal);
+  color: var(--text-active);
+}
+
+body.anahata-theme #compare-bar .compare-filename {
+  color: var(--em-deep);
+}
+
+body.anahata-theme #compare-bar button {
+  background: var(--petal-chalk);
+  color: var(--text-active);
+}
+
+body.anahata-theme .cm-compare-removed {
+  background: rgba(216, 184, 106, 0.35);
+}
+
+body.anahata-theme .cm-compare-added {
+  background: rgba(143, 211, 178, 0.4);
+}
+
+body.anahata-theme #toolbar-grip {
+  background:
+    linear-gradient(112deg, rgba(15, 122, 85, 0.7) 0 24%, transparent 40%),
+    var(--petal);
+  color: var(--text-active);
+}
+
+body.anahata-theme .tb-group label {
+  color: var(--text-primary);
+}
+
+body.anahata-theme .sc-row:nth-child(even) {
+  background: rgba(30, 143, 102, 0.07);
+}
+
+body.anahata-theme .sc-row .sc-key,
+body.anahata-theme .palette-item .p-path {
+  color: var(--em-deep);
+}
+
+body.anahata-theme .palette-item.active .p-path,
+body.anahata-theme .palette-item:hover .p-path {
+  color: var(--text-active);
+}
+
+body.anahata-theme #link-map {
+  background:
+    var(--moss-light),
+    var(--moss-shade),
+    var(--veins-jade),
+    linear-gradient(118deg, rgba(15, 122, 85, 0.55) 0 10%, transparent 22%),
+    linear-gradient(-24deg, rgba(216, 184, 106, 0.45) 0 8%, transparent 18%),
+    linear-gradient(64deg, transparent 0 84%, rgba(246, 251, 245, 0.7) 92%),
+    var(--breath),
+    var(--ground);
+}
+
+body.anahata-theme #link-map-legend {
+  background:
+    linear-gradient(-112deg, rgba(15, 122, 85, 0.7) 0 8%, transparent 16%),
+    var(--petal);
+}
+
+body.anahata-theme .lm-ring { stroke: rgba(22, 48, 42, 0.25); }
+body.anahata-theme .lm-one { stroke: var(--em-deep); }
+body.anahata-theme .lm-arrow-one { fill: var(--em-deep); }
+body.anahata-theme .lm-key-one { border-color: var(--em-deep); }
+body.anahata-theme .lm-node.lm-focus text { fill: var(--em-deep); }
+body.anahata-theme .lm-node.lm-focus circle { stroke: var(--gold-soft); }
+body.anahata-theme .lm-node circle { filter: drop-shadow(3px 3px 0 rgba(30, 143, 102, 0.55)); }
+body.anahata-theme .lm-node.lm-center circle { filter: drop-shadow(5px 5px 0 var(--gold-soft)); }
+body.anahata-theme .lm-node.lm-orphan circle { fill: var(--sage-light); stroke: var(--sage); }
+body.anahata-theme .cm-change-saved { background: var(--jade); }
+body.anahata-theme .cm-bookmark-dot { color: var(--gold-soft); }
+body.anahata-theme .kb-active { outline-color: var(--gold-soft); }
+body.anahata-theme #file-tree-content:focus,
+body.anahata-theme #recent-files-content:focus,
+body.anahata-theme #function-list-content:focus,
+body.anahata-theme #search-results-list:focus,
+body.anahata-theme #closer-results:focus,
+body.anahata-theme #grammar-results:focus {
+  box-shadow: inset 0 0 0 3px var(--jade);
+}
+body.anahata-theme #editor-area.grid-view { background: var(--stroke); }
+body.anahata-theme #editor-area.grid-view .cm-editor.cm-focused { box-shadow: inset 0 0 0 3px var(--em); }
+body.anahata-theme #spell-note { background: var(--jade-pale); }
+
 /* Spell check panel: current word, replacement, then every misspelled word */
 #spell-panel {
   overflow-y: auto;
