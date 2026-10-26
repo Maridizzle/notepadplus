@@ -595,7 +595,7 @@ function menuTemplateFor(cmd) {
           click: (item) => { if (mainWindow) mainWindow.setAlwaysOnTop(item.checked); },
         },
         { type: 'separator' },
-        cmd('Toggle Theme (Dark/Light)', 'toggle-theme', { accelerator: 'CmdOrCtrl+Alt+Shift+Y' }),
+        cmd('Cycle Theme (Noon / Dusk / Anahata)', 'toggle-theme', { accelerator: 'CmdOrCtrl+Alt+Shift+Y' }),
         { type: 'separator' },
         { label: 'Toggle Dev Tools', accelerator: 'F12', role: 'toggleDevTools' },
       ],

@@ -1667,7 +1667,7 @@ function applyEditorSettings() {
     effects: [
       wrapCompartment.reconfigure(wordWrap ? EditorView.lineWrapping : []),
       fontCompartment.reconfigure(paneTheme(currentFontFamily)),
-      themeCompartment.reconfigure(isDarkTheme ? oneDark : []),
+      themeCompartment.reconfigure(editorThemeExt()),
       whitespaceCompartment.reconfigure(whitespaceExt()),
       eolCompartment.reconfigure(showEol ? eolMarkerPlugin(mainEolLabel) : []),
       changeHistoryCompartment.reconfigure(showChangeHistory ? changeHistoryGutter : []),
@@ -2805,7 +2805,7 @@ function mainExtensions() {
     wikiLinkPlugin,
     grammarPlugin,
     comparePluginLeft,
-    themeCompartment.of(isDarkTheme ? oneDark : []),
+    themeCompartment.of(editorThemeExt()),
     autoCapExtension,
     wordCompletionExtension,
     keymap.of([
@@ -4016,7 +4016,7 @@ function collectSettings() {
     fontSize,
     fontFamily: currentFontFamily,
     wordWrap,
-    isDarkTheme,
+    theme: currentTheme,
     leftBgColor,
     rightBgColor,
     proseBgColor,
@@ -4040,7 +4040,9 @@ function applySettings(s) {
     setEditorFont(s.fontFamily);
   }
   if (typeof s.wordWrap === 'boolean' && s.wordWrap !== wordWrap) toggleWordWrap();
-  if (typeof s.isDarkTheme === 'boolean' && s.isDarkTheme !== isDarkTheme) toggleTheme();
+  // Settings saved before the three-way cycle only carry isDarkTheme.
+  if (typeof s.theme === 'string') setTheme(s.theme);
+  else if (typeof s.isDarkTheme === 'boolean') setTheme(s.isDarkTheme ? 'dusk' : 'noon');
   if (s.leftBgColor || s.rightBgColor || s.proseBgColor) {
     leftBgColor = s.leftBgColor || null;
     rightBgColor = s.rightBgColor || null;
@@ -4918,7 +4920,7 @@ function createSplitEditor(content, langExt, mode, pane = currentPane()) {
         }
       }
     }, { decorations: v => v.decorations }),
-    splitThemeCompartment.of(isDarkTheme ? oneDark : []),
+    splitThemeCompartment.of(editorThemeExt()),
     autoCapExtension,
     wordCompletionExtension,
     keymap.of([
@@ -5343,22 +5345,34 @@ function closeCompare() {
   document.getElementById('compare-bar').classList.add('hidden');
 }
 
-// Theme toggle
-let isDarkTheme = false;
+// Theme cycle: Noon (default), Dusk (body.dark-theme, One Dark in the editor),
+// Anahata (body.anahata-theme, emerald chrome with the plain editor).
+const THEMES = ['noon', 'dusk', 'anahata'];
+let currentTheme = 'noon';
 const themeCompartment = new Compartment();
 const splitThemeCompartment = new Compartment();
 
-function toggleTheme() {
-  isDarkTheme = !isDarkTheme;
-  document.body.classList.toggle('dark-theme', isDarkTheme);
+function editorThemeExt() {
+  return currentTheme === 'dusk' ? oneDark : [];
+}
+
+function setTheme(name) {
+  if (!THEMES.includes(name)) name = 'noon';
+  currentTheme = name;
+  document.body.classList.toggle('dark-theme', name === 'dusk');
+  document.body.classList.toggle('anahata-theme', name === 'anahata');
 
   editorView.dispatch({
-    effects: themeCompartment.reconfigure(isDarkTheme ? oneDark : []),
+    effects: themeCompartment.reconfigure(editorThemeExt()),
   });
 
   for (const p of openPanes()) {
-    p.view.dispatch({ effects: splitThemeCompartment.reconfigure(isDarkTheme ? oneDark : []) });
+    p.view.dispatch({ effects: splitThemeCompartment.reconfigure(editorThemeExt()) });
   }
+}
+
+function toggleTheme() {
+  setTheme(THEMES[(THEMES.indexOf(currentTheme) + 1) % THEMES.length]);
 }
 
 let sidebarVisible = true;
@@ -5657,7 +5671,7 @@ const TOOLBAR_CATALOG = [
     { id: 'tab-prev', label: 'Prev Tab', title: 'Previous Tab', cmd: 'tab', arg: 'prev' },
     { id: 'tab-first', label: 'First Tab', cmd: 'tab', arg: 'first' },
     { id: 'tab-last', label: 'Last Tab', cmd: 'tab', arg: 'last' },
-    { id: 'toggle-theme', label: 'Theme', title: 'Toggle Theme (Dark/Light)', cmd: 'toggle-theme' },
+    { id: 'toggle-theme', label: 'Theme', title: 'Cycle Theme (Noon / Dusk / Anahata)', cmd: 'toggle-theme' },
     { id: 'autosave-indicator', label: 'Auto-save indicator', widget: true },
   ] },
   { group: 'Tools', items: [
